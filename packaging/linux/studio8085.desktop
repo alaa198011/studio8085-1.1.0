@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=8085 Studio
+GenericName=8085 Assembler and Simulator
+Comment=Assemble, run and debug Intel 8085 programs
+Exec=@EXEC@ %f
+Icon=studio8085
+Terminal=false
+Categories=Development;Electronics;Education;
+Keywords=8085;assembler;simulator;emulator;microprocessor;
+StartupWMClass=studio8085
+MimeType=text/x-asm;

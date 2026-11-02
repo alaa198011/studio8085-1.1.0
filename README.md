@@ -158,7 +158,7 @@ against real decimal arithmetic for every BCD pair, all 246 opcode lengths and T
 against the original GNUSim8085 core on ~94,000 random instruction runs (`tools/diff_vs_gnusim8085`). Hardware comparison is still to do.
 
 ## Credits
-**Idea proposed by Alaa A. Aldhalemi, University of Kufa.** The credit is also shown in *Help > About* inside the application.
+**Designed by Alaa A. Aldhalemi, University of Kufa.** The credit is also shown in *Help > About* inside the application.
 
 ## License
 MIT - see `LICENSE`. This is an independent implementation (no GNUSim8085 code). PySide6/Qt are LGPL.

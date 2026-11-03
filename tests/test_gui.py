@@ -1063,6 +1063,103 @@ def test_window_fits_small_screens(app, mode):
         app.processEvents()
 
 
+def _settle(app, n=5):
+    for _ in range(n):
+        app.processEvents()
+
+
+def test_beginner_memory_panel_is_not_squeezed_on_a_720_screen(app):
+    """Regression (visual QA): with the panels in scroll areas the hex table lost its last column and the
+    detail line on a 1280 x 720 window although they fit; docks now get their natural minimum first."""
+    from PySide6.QtCore import QPoint, QRect
+    w = make_window(app, "beginner")
+    try:
+        w.resize(1280, 720)
+        w.show()
+        _settle(app)
+        holder = w.docks["memory"].widget()
+        assert not holder.verticalScrollBar().isVisible() and not holder.horizontalScrollBar().isVisible()
+        assert _on_screen(w, w.memory.detail)
+        t = w.memory.table
+        last = t.visualRect(t.model().index(0, 15))  # column "F"
+        assert QRect(QPoint(0, 0), t.viewport().size()).contains(last)
+        assert not w.docks["flags"].widget().verticalScrollBar().isVisible()
+    finally:
+        w.editor.document().setModified(False)
+        w.close()
+        _settle(app, 2)
+
+
+@pytest.mark.parametrize("mode", ["beginner", "advanced"])
+@pytest.mark.parametrize("size", [(800, 600), (960, 540), (1280, 720)])
+def test_editor_keeps_a_usable_share_of_narrow_windows(app, mode, size):
+    """Regression (visual QA): fixed side-dock widths left the editor about 60 px wide on small windows."""
+    w = make_window(app, mode)
+    try:
+        w.resize(*size)
+        w.show()
+        _settle(app)
+        assert w.centralWidget().width() >= 0.22 * w.width(), (w.centralWidget().width(), w.width())
+    finally:
+        w.editor.document().setModified(False)
+        w.close()
+        _settle(app, 2)
+
+
+@pytest.mark.parametrize("mode", ["beginner", "advanced"])
+@pytest.mark.parametrize("width", [460, 560, 660])
+def test_mode_box_never_goes_behind_the_chevron(app, mode, width):
+    """Regression (Linux CI, 200 %): on a very narrow window even the Tools row of its own overflowed and
+    hid the Mode box. The captions are dropped first, and the window is never narrower than that row."""
+    w = make_window(app, mode)
+    try:
+        w.resize(width, 600)
+        w.show()
+        _settle(app)
+        assert _on_screen(w, w.origin_edit) and _on_screen(w, w.mode_combo), (mode, width, w.width())
+        assert w.minimumWidth() <= 800  # still fits an 800 x 600 screen
+        assert w.mode_combo.accessibleName() == "Mode" and w.speed.accessibleName() == "Speed"
+        w.resize(1900, 700)
+        _settle(app)
+        assert all(a.isVisible() for a, _l, adv in w._compact_labels if not (adv and mode == "beginner"))
+    finally:
+        w.editor.document().setModified(False)
+        w.close()
+        _settle(app, 2)
+
+
+def test_heatmap_minimum_still_draws_whole_squares(app):
+    from studio8085.ui.memory import HeatmapWidget
+    h = HeatmapWidget()
+    m = h.minimumSize()
+    assert m.width() <= 240 and m.height() <= 220
+    h.resize(m)
+    r = h._rect()
+    assert r.width() == r.height() and r.width() // HeatmapWidget.GRID >= 3
+    assert r.right() <= h.width() and r.bottom() <= h.height()
+
+
+def test_switching_modes_many_times_keeps_size_and_panels(app):
+    w = make_window(app, "advanced")
+    try:
+        w.resize(1366, 768)
+        w.show()
+        _settle(app)
+        seen = {}
+        for i in range(10):
+            w._set_mode("beginner" if i % 2 == 0 else "advanced")
+            _settle(app, 3)
+            assert (w.width(), w.height()) == (1366, 768)
+            docks = frozenset(k for k, d in w.docks.items() if d.isVisible())
+            assert seen.setdefault(w.mode, docks) == docks  # no panel lost or added on later round trips
+            assert _on_screen(w, w.origin_edit) and _on_screen(w, w.mode_combo)
+        assert seen["advanced"] == set(w.docks) and len(seen["beginner"]) == 7
+    finally:
+        w.editor.document().setModified(False)
+        w.close()
+        _settle(app, 2)
+
+
 def test_dock_panels_keep_their_widgets_and_focus(win, app):
     """The scroll areas that let docks shrink are transparent wrappers: same panel, no extra tab stop."""
     from PySide6.QtWidgets import QAbstractScrollArea

@@ -6,7 +6,7 @@ import time
 from importlib import resources
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, QMarginsF, QSize, Qt, QTimer
+from PySide6.QtCore import QByteArray, QEvent, QMarginsF, QSize, Qt, QTimer
 from PySide6.QtGui import (QAction, QActionGroup, QFont, QKeySequence, QPageLayout, QPageSize, QPdfWriter,
                            QShortcut, QTextDocument)
 from PySide6.QtWidgets import (QAbstractScrollArea, QApplication, QCheckBox, QComboBox, QDockWidget,
@@ -98,12 +98,37 @@ class DockScroll(QScrollArea):
     def __init__(self, panel: QWidget):
         super().__init__()
         self.setObjectName("DockScroll")
-        self.setWidgetResizable(True)
+        # Not widgetResizable: for a panel with word-wrapped labels (height-for-width) QScrollArea would
+        # keep it at its *preferred* height and scroll, instead of letting its tables shrink first.
+        self.setWidgetResizable(False)
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)  # keyboard focus and tab order stay on the panel
         self.setAutoFillBackground(False)
         self.viewport().setAutoFillBackground(False)
         self.setWidget(panel)
+        panel.installEventFilter(self)
+
+    def _panel_minimum(self) -> QSize:
+        p = self.widget()
+        return p.minimumSize().expandedTo(p.minimumSizeHint())
+
+    def _fit_panel(self):
+        """The panel fills the viewport, but never gets smaller than its minimum (then it scrolls)."""
+        p = self.widget()
+        if p is None:
+            return
+        size = self.viewport().size().expandedTo(self._panel_minimum())
+        if p.size() != size:
+            p.resize(size)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._fit_panel()
+
+    def eventFilter(self, obj, e):
+        if obj is self.widget() and e.type() == QEvent.Type.LayoutRequest:  # minimum may have changed
+            QTimer.singleShot(0, self._fit_panel)
+        return super().eventFilter(obj, e)
 
     def sizeHint(self):  # lay the docks out at the panel's natural size, as without the scroll area
         return self.widget().sizeHint() if self.widget() is not None else super().sizeHint()
@@ -300,6 +325,33 @@ class MainWindow(QMainWindow):
         D["problems"].raise_()
         QTimer.singleShot(0, self._apply_beginner_sizes)
 
+    def _side_scale(self, widths: list[int]) -> float:
+        """<= 1: shrink the side columns on a narrow window so the editor keeps about 35 % of the width."""
+        return max(0.3, min(1.0, 0.65 * self.width() / sum(widths)))
+
+    def _resize_docks(self, docks: list[QDockWidget], sizes: list[int], orientation: Qt.Orientation,
+                      floor: bool = True):
+        """``resizeDocks`` that asks for at least each panel's natural minimum when there is room.
+
+        Panels in a ``DockScroll`` no longer force the window to grow, so a plain resizeDocks could give
+        them less than they need and show scroll bars even on a screen where everything fits (the hex
+        table lost its last column and the detail line). Asking for the natural minimum keeps the old
+        look whenever the window is big enough; Qt still shrinks the docks to fit a small window.
+        """
+        out = []
+        for d, size in zip(docks, sizes):
+            holder = d.widget()
+            if floor and isinstance(holder, DockScroll) and holder.widget() is not None:
+                need = holder._panel_minimum()
+                if orientation == Qt.Orientation.Vertical:
+                    chrome = max(0, d.height() - holder.height()) or 30
+                    size = max(size, need.height() + chrome)
+                else:
+                    chrome = max(0, d.width() - holder.width())
+                    size = max(size, need.width() + chrome)
+            out.append(size)
+        self.resizeDocks(docks, out, orientation)
+
     def _apply_beginner_sizes(self):
         if self.mode != "beginner":
             return
@@ -308,10 +360,11 @@ class MainWindow(QMainWindow):
         # The sizes below are designed for a window about 900 px tall. On a shorter window (a 768 px laptop)
         # scale them down; asking for more than fits would make Qt grow the window past the screen.
         k = max(0.6, min(1.0, (self.height() - 290) / 660))
-        self.resizeDocks([D["registers"], D["explain"]], [290, 520], H)
-        self.resizeDocks([D["registers"], D["flags"]], [round(372 * k), round(200 * k)], V)
-        self.resizeDocks([D["explain"], D["memory"]], [round(400 * k), round(260 * k)], V)
-        self.resizeDocks([D["problems"]], [round(130 * min(1.0, k + 0.2))], V)
+        kx = self._side_scale([290, 520])
+        self._resize_docks([D["registers"], D["explain"]], [round(290 * kx), round(520 * kx)], H, floor=kx >= 1)
+        self._resize_docks([D["registers"], D["flags"]], [round(372 * k), round(200 * k)], V)
+        self._resize_docks([D["explain"], D["memory"]], [round(400 * k), round(260 * k)], V)
+        self._resize_docks([D["problems"]], [round(130 * min(1.0, k + 0.2))], V)
 
     def _compact_layout(self):
         """One tabbed column on the right and a short strip at the bottom (small screens)."""
@@ -349,10 +402,11 @@ class MainWindow(QMainWindow):
         # Designed for a window about 950 px tall; scale the heights down on shorter windows (720/768 px
         # screens) so the editor keeps its share instead of the bottom panels taking it.
         k = max(0.5, min(1.0, (self.height() - 290) / 660))
-        self.resizeDocks([D["registers"], D["memory"]], [290, 600], H)
-        self.resizeDocks([D["registers"], D["flags"]], [round(352 * k), round(308 * k)], V)
-        self.resizeDocks([D["memory"], D["stack"]], [round(480 * k), round(200 * k)], V)
-        self.resizeDocks([D["problems"]], [round(200 * k)], V)
+        kx = self._side_scale([290, 600])
+        self._resize_docks([D["registers"], D["memory"]], [round(290 * kx), round(600 * kx)], H, floor=kx >= 1)
+        self._resize_docks([D["registers"], D["flags"]], [round(352 * k), round(308 * k)], V)
+        self._resize_docks([D["memory"], D["stack"]], [round(480 * k), round(200 * k)], V)
+        self._resize_docks([D["problems"]], [round(200 * k)], V)
 
     def _act(self, text, slot, shortcut=None, icon=None, color="text", tip=None, checkable=False):
         a = QAction(text, self)
@@ -549,8 +603,9 @@ class MainWindow(QMainWindow):
         tb.addSeparator()
         lbl = QLabel(" Speed ")
         lbl.setObjectName("Dim")
-        adv(lbl)
+        self._compact_labels = [(adv(lbl), lbl, True)]  # (action, label, advanced only)
         self.speed = QComboBox()
+        self.speed.setAccessibleName("Speed")
         for label, rate in SPEEDS:
             self.speed.addItem(label, rate)
         self.speed.setCurrentIndex(self.prefs.get("speed"))
@@ -562,8 +617,9 @@ class MainWindow(QMainWindow):
             tb.addAction(a)
         lbl = QLabel(" Mode ")
         lbl.setObjectName("Dim")
-        tb.addWidget(lbl)
+        self._compact_labels.append((tb.addWidget(lbl), lbl, False))
         self.mode_combo = QComboBox()
+        self.mode_combo.setAccessibleName("Mode")
         self.mode_combo.addItem("Beginner", "beginner")
         self.mode_combo.addItem("Advanced", "advanced")
         self.mode_combo.setToolTip("Beginner shows only what you need to learn; Advanced shows every panel.")
@@ -1420,13 +1476,30 @@ class MainWindow(QMainWindow):
             return
         if self.tb_extra.isHidden() or self.toolBarArea(self.tb_extra) != Qt.ToolBarArea.TopToolBarArea:
             return
-        need = sum(tb.sizeHint().width() for tb in self._toolbars_in_row())
+        # widths as if the "Speed" / "Mode" captions were shown (they may be hidden by compact mode)
+        beginner = getattr(self, "mode", "beginner") == "beginner"
+        labels = [(act, lbl) for act, lbl, adv_only in self._compact_labels if not (adv_only and beginner)]
+        hidden = sum(lbl.sizeHint().width() for act, lbl in labels if not act.isVisible())
+        need = sum(tb.sizeHint().width() for tb in self._toolbars_in_row()) + hidden
         wrap = need > self.width()
         if wrap != self.toolBarBreak(self.tb_extra):
             if wrap:
                 self.insertToolBarBreak(self.tb_extra)
             else:
                 self.removeToolBarBreak(self.tb_extra)
+        # Very narrow (or a high display scale with wide fonts): even a row of its own is too short for
+        # the Tools toolbar, and the Mode box would go behind the chevron. Drop the two captions then;
+        # the boxes keep their tooltips and accessible names.
+        full = self.tb_extra.sizeHint().width() + hidden
+        compact = wrap and full > self.width()
+        for act, lbl in labels:
+            if act.isVisible() == compact:
+                act.setVisible(not compact)
+        # Never narrower than the compact Tools row, so its last item (the Mode box) cannot be pushed
+        # behind the chevron. This is far below 800 px; the docks scroll instead.
+        narrowest = full - sum(lbl.sizeHint().width() for act, lbl in labels)
+        if self.minimumWidth() != narrowest:
+            self.setMinimumWidth(narrowest)
 
     def _schedule_fit_toolbars(self):
         self._fit_toolbars()

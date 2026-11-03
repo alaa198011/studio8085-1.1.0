@@ -623,6 +623,7 @@ class MainWindow(QMainWindow):
             if d.widget() is not None:
                 scale_monospace(d.widget(), delta, geometry)
         self.pc_label.setFont(monospace_font(size=10 + delta))
+        self._schedule_fit_toolbars()  # bigger interface text makes the toolbars wider
 
     def preferences(self):
         dlg = PreferencesDialog(self.prefs, self.themes, self)
@@ -1212,6 +1213,7 @@ class MainWindow(QMainWindow):
                     self._layout_restored = True
                 elif not first:
                     self._default_layout()
+        self._schedule_fit_toolbars()
         if not first:
             self.say("Beginner mode: the essentials only. Switch to Advanced (toolbar or View menu) for every panel."
                      if beginner else "Advanced mode: all panels.")
@@ -1353,6 +1355,44 @@ class MainWindow(QMainWindow):
         if isinstance(state, QByteArray) and not state.isEmpty():
             self.restoreState(state)
             self._layout_restored = True
+
+    # ------------------------------------------------------------ toolbar fit
+    def _toolbars_in_row(self) -> list[QToolBar]:
+        return [tb for tb in (self.tb_file, self.tb_run, self.tb_extra)
+                if not tb.isHidden() and self.toolBarArea(tb) == Qt.ToolBarArea.TopToolBarArea]
+
+    def _fit_toolbars(self):
+        """Move the Tools toolbar to a second row when the three toolbars do not fit in one.
+
+        Qt hides whatever does not fit behind the toolbar's overflow chevron. In Beginner mode the
+        Run toolbar shows text beside its icons and is wide, so on a narrow window (or at a high
+        display scale) the "Store code at" box - which must be visible in both modes - ended up
+        behind the chevron. A second row gives the Tools toolbar the full window width; "Store code
+        at" is its first item, so it stays visible. One row is used again when everything fits.
+        """
+        if not hasattr(self, "tb_extra"):  # called while the window is still being built
+            return
+        if self.tb_extra.isHidden() or self.toolBarArea(self.tb_extra) != Qt.ToolBarArea.TopToolBarArea:
+            return
+        need = sum(tb.sizeHint().width() for tb in self._toolbars_in_row())
+        wrap = need > self.width()
+        if wrap != self.toolBarBreak(self.tb_extra):
+            if wrap:
+                self.insertToolBarBreak(self.tb_extra)
+            else:
+                self.removeToolBarBreak(self.tb_extra)
+
+    def _schedule_fit_toolbars(self):
+        self._fit_toolbars()
+        QTimer.singleShot(0, self._fit_toolbars)  # again once the toolbars have re-laid out
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._fit_toolbars()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        self._schedule_fit_toolbars()
 
     def closeEvent(self, e):
         if not self._maybe_save():

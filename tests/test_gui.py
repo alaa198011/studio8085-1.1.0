@@ -311,10 +311,10 @@ def test_beginner_mode_is_the_default_and_hides_advanced_panels(app):
         assert not w.memory.heat_box.isVisible() and not w.memory.mode.isVisible()
         assert not w.flags.tstates.isVisible()
         assert not w.a_cursor.isVisible() and not w.speed.isVisible()
-        # "Store code at" is in both modes since 1.1.0 (RELEASE_NOTES, USER_GUIDE): it must not be
-        # an Advanced-only item. (Whether it fits on this 800x600 offscreen screen depends on the font
-        # metrics; test_code_address_box_is_visible_in_both_modes checks it at a real window size.)
+        # "Store code at" is in both modes since 1.1.0 (RELEASE_NOTES, USER_GUIDE): not an
+        # Advanced-only item, and actually on screen (not behind the toolbar's overflow chevron)
         assert not any(w.tb_extra.widgetForAction(a) is w.origin_edit for a in w._advanced_actions)
+        assert _on_screen(w, w.origin_edit) and _on_screen(w, w.mode_combo)
         assert w.tb_run.toolButtonStyle() == Qt.ToolButtonStyle.ToolButtonTextBesideIcon
         assert w.a_run.iconText() == "Run" and w.a_into.iconText() == "Step"
     finally:
@@ -998,6 +998,115 @@ def test_code_address_box_is_visible_in_both_modes(win, app):
         b.editor.document().setModified(False)
         b.close()
         app.processEvents()
+
+
+def _on_screen(window, widget) -> bool:
+    """Visible (not hidden in a toolbar's overflow menu) and entirely inside the window."""
+    from PySide6.QtCore import QPoint, QRect
+    r = QRect(widget.mapTo(window, QPoint(0, 0)), widget.size())
+    return widget.isVisible() and not widget.visibleRegion().isEmpty() and window.rect().contains(r)
+
+
+@pytest.mark.parametrize("mode", ["beginner", "advanced"])
+@pytest.mark.parametrize("size", [(800, 600), (900, 600), (1280, 720)])
+def test_code_address_box_fits_on_narrow_windows(app, mode, size):
+    """Regression: in Beginner mode the wide Run toolbar pushed "Store code at" (and the Mode box)
+    behind the Tools toolbar's overflow chevron on narrow windows; the Tools toolbar now wraps."""
+    w = make_window(app, mode)
+    try:
+        w.resize(*size)
+        w.show()
+        for _ in range(3):
+            app.processEvents()
+        assert w.mode == mode
+        assert _on_screen(w, w.origin_edit), (size, mode, w.size())
+        assert _on_screen(w, w.mode_combo), (size, mode, w.size())
+        if not w.toolBarBreak(w.tb_extra):  # one row only when everything really fits
+            assert sum(tb.sizeHint().width() for tb in w._toolbars_in_row()) <= w.width()
+        w.resize(1900, w.height())  # wide again: back to a single toolbar row
+        app.processEvents()
+        assert not w.toolBarBreak(w.tb_extra) and _on_screen(w, w.origin_edit)
+    finally:
+        w.editor.document().setModified(False)
+        w.close()
+        app.processEvents()
+
+
+def test_code_address_box_fits_with_a_large_interface_font(win, app):
+    win._set_mode("beginner")
+    win.resize(900, 700)
+    _set_ui_font(win, 16)
+    try:
+        for _ in range(3):
+            app.processEvents()
+        assert _on_screen(win, win.origin_edit) and _on_screen(win, win.mode_combo)
+    finally:
+        _set_ui_font(win, 0)
+
+
+_HIDPI_PROBE = r"""
+import sys, tempfile
+sys.path.insert(0, sys.argv[1])
+from studio8085.app import use_system_fonts_offscreen
+use_system_fonts_offscreen()
+from PySide6.QtCore import QPoint, QRect, QSettings
+from PySide6.QtWidgets import QApplication
+QApplication.setOrganizationName("S85hidpi"); QApplication.setApplicationName("S85hidpi")
+QSettings.setDefaultFormat(QSettings.Format.IniFormat)
+QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, tempfile.mkdtemp())
+app = QApplication([])
+QSettings().setValue("mode", sys.argv[2])
+from studio8085.ui.mainwindow import MainWindow
+w = MainWindow(); w.resize(int(sys.argv[3]), int(sys.argv[4])); w.show()
+for _ in range(3):
+    app.processEvents()
+ok = []
+for x in (w.origin_edit, w.mode_combo):
+    r = QRect(x.mapTo(w, QPoint(0, 0)), x.size())
+    ok.append(x.isVisible() and not x.visibleRegion().isEmpty() and w.rect().contains(r))
+print("dpr", w.devicePixelRatio(), "mode", w.mode, "size", w.width(), w.height(), "ok", ok)
+w.editor.document().setModified(False)
+sys.exit(0 if all(ok) and w.mode == sys.argv[2] else 1)
+"""
+
+
+@pytest.mark.parametrize("mode", ["beginner", "advanced"])
+@pytest.mark.parametrize("scale", ["1.5", "2"])
+def test_code_address_box_fits_at_high_dpi(mode, scale):
+    """A 1280x720 screen at 150 % / 200 % scaling: a separate process, since the scale factor is fixed
+    when the QApplication starts."""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+    src = str(Path(__file__).resolve().parents[1] / "src")
+    env = dict(os.environ, QT_SCALE_FACTOR=scale, QT_QPA_PLATFORM=os.environ.get("QT_QPA_PLATFORM", "offscreen"))
+    w, h = round(1280 / float(scale)), round(720 / float(scale))
+    r = subprocess.run([sys.executable, "-c", _HIDPI_PROBE, src, mode, str(w), str(h)],
+                       env=env, capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert f"dpr {float(scale)}" in r.stdout, r.stdout
+
+
+def test_the_app_keeps_native_settings_outside_the_tests():
+    """The GUI tests store settings as INI files in a temp dir; the app itself must keep using the
+    platform's native store (the registry on Windows), so it must not change the default format."""
+    import subprocess
+    import sys
+    from pathlib import Path
+    src = str(Path(__file__).resolve().parents[1] / "src")
+    code = """
+import sys
+sys.path.insert(0, sys.argv[1])
+from PySide6.QtCore import QSettings
+from PySide6.QtWidgets import QApplication
+app = QApplication([])
+import studio8085.app, studio8085.ui.mainwindow
+from studio8085.ui.settings import Prefs
+print(Prefs().q.format() == QSettings.Format.NativeFormat)
+"""
+    r = subprocess.run([sys.executable, "-c", code, src], capture_output=True, text=True, timeout=120)
+    assert r.stdout.strip().endswith("True"), r.stdout + r.stderr
 
 
 def test_changing_the_code_address_moves_the_program_at_the_next_run(win, app):

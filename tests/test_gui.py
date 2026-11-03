@@ -1008,7 +1008,7 @@ def _on_screen(window, widget) -> bool:
 
 
 @pytest.mark.parametrize("mode", ["beginner", "advanced"])
-@pytest.mark.parametrize("size", [(800, 600), (900, 600), (1280, 720)])
+@pytest.mark.parametrize("size", [(800, 600), (900, 600), (1024, 600), (1280, 720), (1366, 768)])
 def test_code_address_box_fits_on_narrow_windows(app, mode, size):
     """Regression: in Beginner mode the wide Run toolbar pushed "Store code at" (and the Mode box)
     behind the Tools toolbar's overflow chevron on narrow windows; the Tools toolbar now wraps."""
@@ -1019,6 +1019,7 @@ def test_code_address_box_fits_on_narrow_windows(app, mode, size):
         for _ in range(3):
             app.processEvents()
         assert w.mode == mode
+        assert (w.width(), w.height()) == size  # the window did not grow past the requested size
         assert _on_screen(w, w.origin_edit), (size, mode, w.size())
         assert _on_screen(w, w.mode_combo), (size, mode, w.size())
         if not w.toolBarBreak(w.tb_extra):  # one row only when everything really fits
@@ -1030,6 +1031,88 @@ def test_code_address_box_fits_on_narrow_windows(app, mode, size):
         w.editor.document().setModified(False)
         w.close()
         app.processEvents()
+
+
+@pytest.mark.parametrize("mode", ["beginner", "advanced"])
+def test_window_fits_small_screens(app, mode):
+    """Regression: rigid panel minimums (heatmap, flag buttons, interrupt pins...) added up to a minimum
+    window of about 820 x 900 px in Advanced mode, taller than a 1280 x 720 / 1366 x 768 screen."""
+    w = make_window(app, mode)
+    try:
+        w.resize(1400, 900)
+        w.show()
+        for _ in range(3):
+            app.processEvents()
+        assert w.mode == mode
+        m = w.minimumSizeHint()
+        assert m.width() <= 1024 and m.height() <= 600, m  # also fits 1024 x 600 netbooks
+        w.resize(1280, 680)  # 1280 x 720 minus the taskbar
+        for _ in range(3):
+            app.processEvents()
+        assert (w.width(), w.height()) == (1280, 680)
+        shown = {k for k, d in w.docks.items() if d.isVisible()}
+        assert shown == ({"registers", "flags", "memory", "explain", "instructions", "problems", "output"}
+                         if mode == "beginner" else set(w.docks))  # every panel is still there
+        front = [k for k in shown if not w.docks[k].visibleRegion().isEmpty()]  # not behind another tab
+        assert {"registers", "flags", "memory", "problems"} <= set(front)
+        for k in front:
+            assert w.rect().contains(w.docks[k].geometry()), k
+    finally:
+        w.editor.document().setModified(False)
+        w.close()
+        app.processEvents()
+
+
+def test_dock_panels_keep_their_widgets_and_focus(win, app):
+    """The scroll areas that let docks shrink are transparent wrappers: same panel, no extra tab stop."""
+    from PySide6.QtWidgets import QAbstractScrollArea
+    from studio8085.ui.mainwindow import DockScroll
+    panels = {"memory": win.memory, "flags": win.flags, "io": win.io, "trace": win.trace,
+              "interrupts": win.interrupts, "instructions": win.instructions}
+    for k, panel in panels.items():
+        holder = win.docks[k].widget()
+        assert isinstance(holder, DockScroll) and holder.widget() is panel, k
+        assert holder.focusPolicy() == Qt.FocusPolicy.NoFocus
+    for k, panel in (("registers", win.registers), ("explain", win.explain)):  # these already scroll
+        assert isinstance(panel, QAbstractScrollArea) and win.docks[k].widget() is panel, k
+
+
+def test_saved_layout_is_restored_and_clamped_to_the_screen(app):
+    from PySide6.QtCore import QByteArray, QSettings
+    from studio8085.ui.mainwindow import MainWindow
+    w = make_window(app, "advanced")
+    try:
+        w.resize(1200, 700)
+        w.show()
+        app.processEvents()
+        w.docks["io"].raise_()
+        w.docks["trace"].hide()
+        app.processEvents()
+        state = w.saveState()
+        w.prefs.q.setValue("window/state", state)
+        w.setGeometry(0, 0, 4000, 3000)  # saved on a much bigger screen
+        w.prefs.q.setValue("window/geometry", w.saveGeometry())
+    finally:
+        w.editor.document().setModified(False)
+        w.close()
+        app.processEvents()
+    w2 = MainWindow()  # settings kept: a new session restores the layout
+    try:
+        w2.show()
+        for _ in range(3):
+            app.processEvents()
+        assert w2._layout_restored
+        assert not w2.docks["trace"].isVisible() and w2.docks["io"].isVisible()
+        assert isinstance(QSettings().value("window/state"), QByteArray)
+        avail = w2.screen().availableGeometry()
+        assert w2.width() <= avail.width() and w2.height() <= avail.height(), (w2.size(), avail)
+        assert avail.intersects(w2.frameGeometry())
+        assert _on_screen(w2, w2.origin_edit) and _on_screen(w2, w2.mode_combo)
+    finally:
+        w2.editor.document().setModified(False)
+        w2.close()
+        app.processEvents()
+        QSettings().clear()
 
 
 def test_code_address_box_fits_with_a_large_interface_font(win, app):

@@ -9,10 +9,10 @@ from pathlib import Path
 from PySide6.QtCore import QByteArray, QMarginsF, QSize, Qt, QTimer
 from PySide6.QtGui import (QAction, QActionGroup, QFont, QKeySequence, QPageLayout, QPageSize, QPdfWriter,
                            QShortcut, QTextDocument)
-from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDockWidget, QFileDialog, QFrame,
-                               QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMainWindow,
-                               QMessageBox, QPushButton, QToolBar, QToolButton, QVBoxLayout,
-                               QWidget)
+from PySide6.QtWidgets import (QAbstractScrollArea, QApplication, QCheckBox, QComboBox, QDockWidget,
+                               QFileDialog, QFrame, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
+                               QMainWindow, QMessageBox, QPushButton, QScrollArea, QToolBar, QToolButton,
+                               QVBoxLayout, QWidget)
 
 from .. import APP_NAME, IDEA_AFFILIATION, IDEA_AUTHOR, __version__
 from .. import APP_NAME as _APP
@@ -83,6 +83,30 @@ class FindBar(QFrame):
 
     def _changed(self, *_):
         self.editor.highlight_matches(self.text.text(), self.case.isChecked())
+
+
+class DockScroll(QScrollArea):
+    """Holds a dock panel so the dock can be made smaller than the panel's minimum size.
+
+    Several panels have a rigid minimum (the heatmap, the flag buttons, the interrupt pins...). Inside a
+    dock, those minimums add up and forced the main window to about 820 x 900 px in Advanced mode, more
+    than a 1280 x 720 or 1366 x 768 screen offers. In this scroll area the panel still fills the dock and
+    looks exactly as before whenever the dock is at least as big as the panel's minimum; only when the
+    window is smaller do scroll bars appear instead of the window growing past the screen.
+    """
+
+    def __init__(self, panel: QWidget):
+        super().__init__()
+        self.setObjectName("DockScroll")
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)  # keyboard focus and tab order stay on the panel
+        self.setAutoFillBackground(False)
+        self.viewport().setAutoFillBackground(False)
+        self.setWidget(panel)
+
+    def sizeHint(self):  # lay the docks out at the panel's natural size, as without the scroll area
+        return self.widget().sizeHint() if self.widget() is not None else super().sizeHint()
 
 
 class MainWindow(QMainWindow):
@@ -201,7 +225,8 @@ class MainWindow(QMainWindow):
         for key, title, widget in spec:
             d = QDockWidget(title, self)
             d.setObjectName(key)
-            d.setWidget(widget)
+            # panels that scroll by themselves (tables) go in directly; the others get a scroll area
+            d.setWidget(widget if isinstance(widget, QAbstractScrollArea) else DockScroll(widget))
             d.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetMovable | QDockWidget.DockWidgetFeature.DockWidgetFloatable
                           | QDockWidget.DockWidgetFeature.DockWidgetClosable)
             self.docks[key] = d
@@ -321,10 +346,13 @@ class MainWindow(QMainWindow):
             return
         D = self.docks
         H, V = Qt.Orientation.Horizontal, Qt.Orientation.Vertical
+        # Designed for a window about 950 px tall; scale the heights down on shorter windows (720/768 px
+        # screens) so the editor keeps its share instead of the bottom panels taking it.
+        k = max(0.5, min(1.0, (self.height() - 290) / 660))
         self.resizeDocks([D["registers"], D["memory"]], [290, 600], H)
-        self.resizeDocks([D["registers"], D["flags"]], [352, 308], V)
-        self.resizeDocks([D["memory"], D["stack"]], [480, 200], V)
-        self.resizeDocks([D["problems"]], [200], V)
+        self.resizeDocks([D["registers"], D["flags"]], [round(352 * k), round(308 * k)], V)
+        self.resizeDocks([D["memory"], D["stack"]], [round(480 * k), round(200 * k)], V)
+        self.resizeDocks([D["problems"]], [round(200 * k)], V)
 
     def _act(self, text, slot, shortcut=None, icon=None, color="text", tip=None, checkable=False):
         a = QAction(text, self)
@@ -1349,12 +1377,30 @@ class MainWindow(QMainWindow):
         state = q.value("window/state")
         if isinstance(geo, QByteArray) and not geo.isEmpty():
             self.restoreGeometry(geo)
+            self._fit_to_screen()  # saved on a bigger screen (or a projector): keep it on this one
         else:
             screen = self.screen().availableGeometry()
             self.resize(min(1500, screen.width() - 40), min(900, screen.height() - 60))
         if isinstance(state, QByteArray) and not state.isEmpty():
             self.restoreState(state)
             self._layout_restored = True
+
+    def _fit_to_screen(self):
+        """Shrink/move the (non-maximised) window so it lies inside the available screen area."""
+        if self.isMaximized() or self.isFullScreen() or self.screen() is None:
+            return
+        avail = self.screen().availableGeometry()
+        frame = self.frameGeometry()
+        extra_w, extra_h = frame.width() - self.width(), frame.height() - self.height()
+        w = min(self.width(), avail.width() - extra_w)
+        h = min(self.height(), avail.height() - extra_h)
+        if (w, h) != (self.width(), self.height()):
+            self.resize(max(w, self.minimumSizeHint().width()), max(h, self.minimumSizeHint().height()))
+        frame = self.frameGeometry()
+        x = min(max(frame.x(), avail.left()), max(avail.left(), avail.right() - frame.width() + 1))
+        y = min(max(frame.y(), avail.top()), max(avail.top(), avail.bottom() - frame.height() + 1))
+        if (x, y) != (frame.x(), frame.y()):
+            self.move(x, y)
 
     # ------------------------------------------------------------ toolbar fit
     def _toolbars_in_row(self) -> list[QToolBar]:

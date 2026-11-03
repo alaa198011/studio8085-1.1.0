@@ -13,9 +13,14 @@ from PySide6.QtWidgets import QApplication
 def app(tmp_path_factory):
     QApplication.setOrganizationName("S85test")
     QApplication.setApplicationName("S85test")
-    QSettings.setPath(QSettings.Format.NativeFormat, QSettings.Scope.UserScope,
-                      str(tmp_path_factory.mktemp("settings")))
-    a = QApplication.instance() or QApplication([])
+    settings_dir = str(tmp_path_factory.mktemp("settings"))
+    QSettings.setPath(QSettings.Format.NativeFormat, QSettings.Scope.UserScope, settings_dir)
+    # On Windows NativeFormat is the registry and setPath() does not apply to it, so the tests
+    # used to read/clear the real HKCU\Software\S85test key (two runs at once clobbered each other).
+    # INI files in the temp dir keep every run isolated on all platforms.
+    QSettings.setDefaultFormat(QSettings.Format.IniFormat)
+    QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, settings_dir)
+    a =QApplication.instance() or QApplication([])
     yield a
 
 
@@ -305,7 +310,11 @@ def test_beginner_mode_is_the_default_and_hides_advanced_panels(app):
         assert shown == {"registers", "flags", "memory", "explain", "instructions", "problems", "output"}
         assert not w.memory.heat_box.isVisible() and not w.memory.mode.isVisible()
         assert not w.flags.tstates.isVisible()
-        assert not w.origin_edit.isVisible() and not w.a_cursor.isVisible() and not w.speed.isVisible()
+        assert not w.a_cursor.isVisible() and not w.speed.isVisible()
+        # "Store code at" is in both modes since 1.1.0 (RELEASE_NOTES, USER_GUIDE): it must not be
+        # an Advanced-only item. (Whether it fits on this 800x600 offscreen screen depends on the font
+        # metrics; test_code_address_box_is_visible_in_both_modes checks it at a real window size.)
+        assert not any(w.tb_extra.widgetForAction(a) is w.origin_edit for a in w._advanced_actions)
         assert w.tb_run.toolButtonStyle() == Qt.ToolButtonStyle.ToolButtonTextBesideIcon
         assert w.a_run.iconText() == "Run" and w.a_into.iconText() == "Step"
     finally:

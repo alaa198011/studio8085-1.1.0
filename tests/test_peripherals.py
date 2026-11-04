@@ -379,3 +379,54 @@ def test_output_latch_is_blank_until_written():
     assert not latch.written
     latch.write(0x10, 0)
     assert latch.written and latch.value == 0
+
+
+# ------------------------------------------------- the bundled lab programs
+def _lab(name):
+    from importlib import resources
+    return resources.files("studio8085").joinpath("examples", "trainer", name).read_text(encoding="utf-8")
+
+
+def test_lab_programs_are_bundled_and_assemble_in_both_syntaxes():
+    from importlib import resources
+    names = sorted(f.name for f in resources.files("studio8085").joinpath("examples", "trainer").iterdir()
+                   if f.name.endswith(".asm"))
+    assert names == ["E1_read_switches_control_leds.asm", "E1b_seven_segment_raw.asm", "E1c_seven_segment_hex.asm"]
+    for n in names:
+        for compat in ("off", "strict"):
+            r = assemble(_lab(n), 0, compat=compat)
+            assert r.ok and not r.warnings, (n, compat, [(d.line, d.message) for d in r.diagnostics])
+        assert r.metadata["validation"] == "T"
+
+
+def test_lab_e1_is_the_owner_program_verbatim():
+    src = _lab("E1_read_switches_control_leds.asm")
+    assert "START: IN 00H\n       OUT 01H\n       HLT\n" in src
+    assert bytes(assemble(src, 0).image[a] for a in range(5)) == bytes([0xDB, 0x00, 0xD3, 0x01, 0x76])
+    for v in (0x00, 0xA5, 0xFF):
+        m, k = machine(src)
+        k.set_switches(v)
+        m.step_into()
+        assert m.cpu.a == v and not k.leds.written
+        m.step_into()
+        assert k.leds.value == v
+        assert m.step_into() is Stop.HALT
+
+
+def test_lab_e1b_raw_segments_show_h_then_h_dot():
+    m, k = machine(_lab("E1b_seven_segment_raw.asm"))
+    m.step_into()
+    m.step_into()
+    assert k.display.segments() == set("bcefg")  # H
+    assert m.run_to_end() is Stop.HALT
+    assert k.display.value == 0xF6 == k.leds.value and k.display.segments() == set("bcefgp")  # H.
+
+
+def test_lab_e1c_hex_decodes_the_low_nibble_of_the_switches():
+    r = assemble(_lab("E1c_seven_segment_hex.asm"), 0)
+    assert r.metadata["display"] == "hex"
+    m, k = machine(_lab("E1c_seven_segment_hex.asm"))
+    k.display.set_mode(HEX)
+    k.set_switches(0b0101_1010)
+    m.run_to_end()
+    assert k.leds.value == 0x5A and k.display.glyph() == "A" and k.display.segments() == set("abcefg")

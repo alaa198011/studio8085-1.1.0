@@ -36,6 +36,8 @@ DARK = {
     "exec_line": "#4a4212", "exec_arrow": "#ffd34d", "bp": "#e5484d",
     "error": "#f0616d", "warning": "#e0b341", "ok": "#3fb97c", "info": "#4f9cff",
     "heat_read": "#3b82f6", "heat_write": "#f97316", "heat_exec": "#22c55e",
+    # Virtual 8085 Trainer Kit (LEDs and the seven-segment digit)
+    "led_on": "#ff4545", "led_off": "#3b2629", "seg_on": "#ff5233", "seg_off": "#2e2223", "seg_bg": "#121011",
     "syntax": {
         "mnemonic": "#82aaff|b", "directive": "#c792ea|b", "register": "#f78c6c",
         "number": "#ffcb6b", "label": "#c3e88d|b", "symbol": "#89ddff",
@@ -53,6 +55,7 @@ LIGHT = {
     "exec_line": "#fff3b0", "exec_arrow": "#ae7b00", "bp": "#d92d3a",
     "error": "#d92d3a", "warning": "#9d681b", "ok": "#167c4f", "info": "#2563eb",
     "heat_read": "#2563eb", "heat_write": "#ea580c", "heat_exec": "#16a34a",
+    "led_on": "#e0101e", "led_off": "#ead9db", "seg_on": "#ff3b26", "seg_off": "#3a2a2b", "seg_bg": "#1c1718",
     "syntax": {
         "mnemonic": "#1d4ed8|b", "directive": "#7c3aed|b", "register": "#c2410c",
         "number": "#b45309", "label": "#15803d|b", "symbol": "#0e7490",
@@ -71,6 +74,7 @@ HIGH_CONTRAST = {
     "exec_line": "#5c4a00", "exec_arrow": "#ffd400", "bp": "#ff5c5c",
     "error": "#ff7b7b", "warning": "#ffd400", "ok": "#5cff9d", "info": "#7cc4ff",
     "heat_read": "#4da3ff", "heat_write": "#ff9f1c", "heat_exec": "#5cff9d",
+    "led_on": "#ff3030", "led_off": "#1e0000", "seg_on": "#ffd400", "seg_off": "#262000", "seg_bg": "#000000",
     "syntax": {
         "mnemonic": "#8cc8ff|b", "directive": "#ff9dff|b", "register": "#ffb870",
         "number": "#ffff7a", "label": "#a0ff9f|b", "symbol": "#7cffff",

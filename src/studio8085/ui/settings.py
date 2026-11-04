@@ -17,6 +17,9 @@ DEFAULTS = {
     "stop_idle": True, "live_diag": True, "speed": 0, "recent": [],
     "mode": "beginner", "compat": "off", "ui_font_size": 0, "predict_first": False,
     "palette_scope": "Essential", "keep_memory": True,
+    # Virtual 8085 Trainer Kit (Phase 1). Ports are virtual teaching assignments, not real kit addresses.
+    "trainer_enabled": True, "trainer_switch_port": 0x00, "trainer_led_port": 0x01, "trainer_seg_port": 0x02,
+    "trainer_seg_mode": "raw",
 }
 
 

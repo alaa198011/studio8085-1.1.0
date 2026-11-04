@@ -22,6 +22,7 @@ from ..core.catalog import FORM_OF
 from ..core.explain import flag_notes
 from ..core.machine import Machine, Stop
 from ..core.opcodes import TABLE
+from ..core.peripherals import PeripheralConfigError, PortMap, TrainerKit
 from ..core.trace import to_csv, to_html, to_markdown
 from .docks import (ExplainPanel, FlagsPanel, InterruptPanel, IOPanel, ListingPanel, OutputPanel,
                     ProblemsPanel, RegistersPanel, StackPanel, SymbolsPanel, TracePanel, parse_hex)
@@ -33,6 +34,8 @@ from .instructions import InstructionPanel
 from .memory import MemoryPanel
 from .settings import Prefs, PreferencesDialog
 from .themes import Theme, apply_theme, available_themes
+from .trainer import TITLE as TRAINER_TITLE
+from .trainer import PortMapDialog, TrainerPanel
 
 SPEEDS = [("Max speed", 0), ("100,000 instr/s", 100_000), ("10,000 instr/s", 10_000),
           ("1,000 instr/s", 1_000), ("100 instr/s", 100), ("10 instr/s", 10), ("1 instr/s", 1)]
@@ -205,6 +208,16 @@ class MainWindow(QMainWindow):
         self.explain = ExplainPanel()
         self.instructions = InstructionPanel()
         self.trace = TracePanel()
+        self.kit = self._make_kit()
+        self.trainer = TrainerPanel(self.kit)
+        self.trainer.set_machine(self.machine)
+        self.trainer.changed.connect(self._trainer_changed)
+        self.trainer.enabled_changed.connect(self._trainer_enabled)
+        self.trainer.mode_changed.connect(lambda m: self.prefs.set("trainer_seg_mode", m))
+        self.trainer.ports_requested.connect(self.trainer_ports)
+        self.trainer.reset_requested.connect(self.trainer_reset)
+        self.trainer.guide.load_requested.connect(self.start_experiment_program)
+        self.io.model.dataChanged.connect(self._io_edited)
         for p in (self.registers, self.flags, self.stack, self.io, self.memory, self.symbols, self.interrupts,
                   self.explain):
             p.set_machine(self.machine)
@@ -246,7 +259,7 @@ class MainWindow(QMainWindow):
                 ("symbols", "Symbols", self.symbols), ("problems", "Problems", self.problems),
                 ("listing", "Listing", self.listing), ("output", "Output", self.output),
                 ("explain", "Explain", self.explain), ("instructions", "Instructions", self.instructions),
-                ("trace", "Trace", self.trace)]
+                ("trace", "Trace", self.trace), ("trainer", TRAINER_TITLE, self.trainer)]
         for key, title, widget in spec:
             d = QDockWidget(title, self)
             d.setObjectName(key)
@@ -289,6 +302,8 @@ class MainWindow(QMainWindow):
         self.splitDockWidget(D["memory"], D["stack"], Qt.Orientation.Vertical)
         self.tabifyDockWidget(D["stack"], D["io"])
         self.tabifyDockWidget(D["io"], D["symbols"])
+        self.addDockWidget(R, D["trainer"])
+        self.tabifyDockWidget(D["symbols"], D["trainer"])  # Phase 1: a tab next to I/O Ports; Stack stays in front
         for k in ("problems", "listing", "output", "trace"):
             self.addDockWidget(B, D[k])
         self.tabifyDockWidget(D["problems"], D["listing"])
@@ -315,6 +330,8 @@ class MainWindow(QMainWindow):
         self.splitDockWidget(D["explain"], D["memory"], Qt.Orientation.Vertical)
         self.addDockWidget(R, D["instructions"])
         self._tab(D["explain"], D["instructions"])  # the "write" and "run" guides share one pane
+        self.addDockWidget(R, D["trainer"])
+        self._tab(D["instructions"], D["trainer"])  # hidden below; View or Lab menu brings it back as a tab here
         self.addDockWidget(B, D["problems"])
         self.addDockWidget(B, D["output"])
         self.tabifyDockWidget(D["problems"], D["output"])
@@ -371,7 +388,8 @@ class MainWindow(QMainWindow):
         R, B = Qt.DockWidgetArea.RightDockWidgetArea, Qt.DockWidgetArea.BottomDockWidgetArea
         self._reset_docks()
         D = self.docks
-        order = ["registers", "flags", "explain", "instructions", "memory", "stack", "io", "symbols", "interrupts"]
+        order = ["registers", "flags", "explain", "instructions", "memory", "stack", "io", "symbols", "interrupts",
+                 "trainer"]
         for k in order:
             self.addDockWidget(R, D[k])
         for a, b in zip(order, order[1:]):
@@ -528,7 +546,7 @@ class MainWindow(QMainWindow):
             self.compat_menu.addAction(a)
 
         m = mb.addMenu("&View")
-        for key in ("registers", "flags", "explain", "instructions", "interrupts", "memory", "stack", "io", "symbols", "problems", "listing", "output", "trace"):
+        for key in ("registers", "flags", "explain", "instructions", "interrupts", "memory", "stack", "io", "symbols", "problems", "listing", "output", "trace", "trainer"):
             m.addAction(self.docks[key].toggleViewAction())
         m.addSeparator()
         self.theme_menu = m.addMenu("&Theme")
@@ -551,6 +569,17 @@ class MainWindow(QMainWindow):
         m.addAction(self.a_compact)
         m.addAction(self.a_goto_editor)
         m.addAction(self.a_layout)
+
+        m = mb.addMenu("&Lab")
+        self.lab_menu = m
+        self.a_trainer_show = m.addAction("Show the &Virtual 8085 Trainer Kit", self.show_trainer)
+        self.a_experiment1 = m.addAction("&Experiment 1: Read Switches and Control LEDs", self.start_experiment)
+        m.addSeparator()
+        for name, label in self.TRAINER_EXAMPLES:
+            m.addAction(label, lambda n=name: self._open_trainer_example(n))
+        m.addSeparator()
+        m.addAction("Trainer Kit &Port Mapping...", self.trainer_ports)
+        m.addAction("&Reset Trainer Hardware", self.trainer_reset)
 
         m = mb.addMenu("&Help")
         m.addAction(self.a_ref)
@@ -647,7 +676,7 @@ class MainWindow(QMainWindow):
         apply_theme(QApplication.instance(), self.theme, font)
         t = self.theme
         self.editor.set_theme(t, self.prefs.syntax_overrides(t.dark))
-        for p in (self.memory, self.registers, self.stack, self.io, self.problems, self.listing):
+        for p in (self.memory, self.registers, self.stack, self.io, self.problems, self.listing, self.trainer):
             p.set_theme(t)
         self._refresh_icons()
         for a in self.theme_group.actions():
@@ -783,6 +812,7 @@ class MainWindow(QMainWindow):
     def _drop_session(self):
         self.timer.stop()
         self.machine.unload(keep_memory=self.prefs.get("keep_memory"))
+        self.kit.reset_outputs()  # a new program starts with dark LEDs; the switches stay where they are
         self.stack.reset()
         self._before = None
         self.explain.show_hint()
@@ -1028,6 +1058,7 @@ class MainWindow(QMainWindow):
             self.editor.set_exec_line(None)
             return False
         self.machine.load(res, keep_memory=self.prefs.get("keep_memory"))
+        self.kit.reset_outputs()  # assemble / restart / reload: LEDs and display blank, switches kept
         self.stack.reset()
         self._before = None
         self.explain.clear_last("<p><i>Nothing has run yet - the first instruction is highlighted in the editor.</i></p>")
@@ -1040,6 +1071,8 @@ class MainWindow(QMainWindow):
         for w in res.warnings:
             self.output.add(f"warning line {w.line}: {w.message}")
         self._set_state("ready")
+        if self.trainer.guide.isVisible():
+            self.trainer.guide.program_loaded()
         self.refresh_all()
         return True
 
@@ -1220,6 +1253,123 @@ class MainWindow(QMainWindow):
     def _after_manual_edit(self):
         self.refresh_all()
 
+    # ============================================== Virtual 8085 Trainer Kit
+    TRAINER_EXAMPLES = [("E1_read_switches_control_leds.asm", "Lab program: Read switches, control LEDs (E1)"),
+                        ("E1b_seven_segment_raw.asm", "Lab program: Seven-segment raw bits"),
+                        ("E1c_seven_segment_hex.asm", "Lab program: Seven-segment hex decode")]
+
+    def _make_kit(self) -> TrainerKit:
+        p = self.prefs
+        ports = PortMap(p.get("trainer_switch_port"), p.get("trainer_led_port"), p.get("trainer_seg_port"))
+        try:
+            ports.validate()
+        except PeripheralConfigError:
+            ports = PortMap()  # a damaged setting: fall back to the documented defaults
+        kit = TrainerKit(self.machine.cpu, ports, enabled=p.get("trainer_enabled"))
+        try:
+            kit.display.set_mode(p.get("trainer_seg_mode"))
+        except PeripheralConfigError:
+            pass
+        return kit
+
+    def _trainer_changed(self):
+        """The user flipped a switch: the I/O Ports row of the switch port mirrors it."""
+        if self.io.isVisible():
+            self.io.refresh()
+        if self.state in ("ready", "paused", "halted"):
+            self.explain.refresh_next(self.machine.program is not None)  # "IN 00h will read ..." stays true
+
+    def _trainer_enabled(self, on: bool):
+        self.prefs.set("trainer_enabled", on)
+        self.say("Trainer kit connected: IN/OUT on its ports drive the switches, LEDs and display." if on else
+                 "Trainer kit disconnected: IN/OUT use only the I/O Ports table, exactly as before.")
+        self.refresh_all()
+
+    def _io_edited(self, top, bottom, _roles=None):
+        """An edit in the I/O Ports table on the switch port sets the switches (the switches own that port)."""
+        k = self.kit
+        if not k.enabled:
+            return
+        port = k.switches.port
+        if top.row() <= port <= bottom.row() and self.machine.cpu.io[port] != k.switches.value:
+            k.set_switches(self.machine.cpu.io[port])
+            self.trainer.refresh()
+
+    def show_trainer(self):
+        if self.a_focus.isChecked():
+            self.a_focus.setChecked(False)
+            self.toggle_focus_mode()
+        d = self.docks["trainer"]
+        d.show()
+        d.raise_()
+        QTimer.singleShot(0, self._size_trainer_dock)
+
+    def _size_trainer_dock(self):
+        """Ask for the panel's natural height when it is docked in a short tab group (never more than about
+        60 % of the window, so the editor and the other column keep their space; the panel scrolls)."""
+        d = self.docks["trainer"]
+        if d.isFloating() or not d.isVisible():
+            return
+        holder = d.widget()
+        need = holder.widget().sizeHint().height() + max(0, d.height() - holder.height())
+        want = min(need, round(self.height() * 0.6))
+        if d.height() < want:
+            self.resizeDocks([d], [want], Qt.Orientation.Vertical)
+
+    def trainer_ports(self):
+        dlg = PortMapDialog(self.kit.ports, self)
+        if not dlg.exec():
+            return
+        ports = dlg.ports()
+        try:
+            self.kit.set_ports(ports)
+        except PeripheralConfigError as e:  # the dialog validates first; keep a clear message anyway
+            QMessageBox.warning(self, APP_NAME, str(e))
+            return
+        self.prefs.set("trainer_switch_port", ports.switches_in)
+        self.prefs.set("trainer_led_port", ports.leds_out)
+        self.prefs.set("trainer_seg_port", ports.seven_segment_out)
+        self.trainer.sync_from_kit()
+        self.say(f"Trainer kit ports: switches IN {ports.switches_in:02X}H, LEDs OUT {ports.leds_out:02X}H, "
+                 f"seven-segment OUT {ports.seven_segment_out:02X}H", "ok")
+        self.refresh_all()
+
+    def trainer_reset(self):
+        self.kit.reset_hardware()
+        self.trainer.sync_from_kit()
+        self.say("Trainer kit reset: switches down, LEDs and display blank. The CPU was not touched.")
+        self.refresh_all()
+
+    def _open_trainer_example(self, name: str):
+        if self._maybe_save():
+            self._load_example("trainer/" + name)
+            self.show_trainer()
+            self._apply_display_hint()
+
+    def _apply_display_hint(self):
+        """A lab program may say ``; @display: hex`` (or raw): switch the display mode for it. Display only."""
+        mode = (self.live.metadata.get("display", "") if self.live else "").strip().lower()
+        if mode in ("raw", "hex") and mode != self.kit.display.mode:
+            self.kit.display.set_mode(mode)
+            self.prefs.set("trainer_seg_mode", mode)
+            self.trainer.sync_from_kit()
+            self.say(f"This lab uses the seven-segment display in {'Hex decode' if mode == 'hex' else 'Raw segment bits'} "
+                     "mode (Trainer Kit panel). Changing the mode never touches the CPU.", "ok")
+
+    def start_experiment(self):
+        """Lab > Experiment 1: show the kit with the guided flow (the program is loaded at its 'Assemble' step)."""
+        self.show_trainer()
+        self.trainer.show_guide()
+        self.trainer.refresh()
+        self.say("Experiment 1: follow the steps in the Trainer Kit panel.", "ok")
+
+    def start_experiment_program(self):
+        if not self._maybe_save():
+            return
+        self._load_example("trainer/" + self.TRAINER_EXAMPLES[0][0])
+        if self._assemble_and_load():
+            self.say("Experiment 1 program assembled. Press Step Into (F11) to execute IN.", "ok")
+
     # ============================================================= refresh
     def _pull_out_log(self):
         m = self.machine
@@ -1250,7 +1400,7 @@ class MainWindow(QMainWindow):
         self.stack.update_base()  # keep the stack extent right even when the Stack panel is hidden
         self.registers.refresh(reset_marks=self.state in ("idle", "ready"))
         self.flags.refresh()
-        for w in (self.stack, self.io, self.symbols, self.interrupts, self.memory):
+        for w in (self.stack, self.io, self.symbols, self.interrupts, self.memory, self.trainer):
             if w.isVisible():
                 w.refresh()
         self._pull_out_log()
@@ -1295,6 +1445,7 @@ class MainWindow(QMainWindow):
                 if isinstance(state, QByteArray) and not state.isEmpty() and not first:
                     self.restoreState(state)
                     self._layout_restored = True
+                    self._place_docks_missing_from(state, "advanced")
                 elif not first:
                     self._default_layout()
         self._schedule_fit_toolbars()
@@ -1440,6 +1591,27 @@ class MainWindow(QMainWindow):
         if isinstance(state, QByteArray) and not state.isEmpty():
             self.restoreState(state)
             self._layout_restored = True
+            self._place_docks_missing_from(state, self.prefs.get("mode"))
+
+    def _place_docks_missing_from(self, state: QByteArray, mode: str):
+        """A layout saved before a dock existed (e.g. by 8085 Studio 1.1.0, before the Trainer Kit) does not
+        mention it, and Qt then leaves it wherever the default layout put it. Give it the default place of the
+        mode instead: hidden in Beginner mode, a tab next to I/O Ports in Advanced mode."""
+        raw = bytes(state.data())
+        d = self.docks["trainer"]
+        if "trainer".encode("utf-16-be") in raw:
+            return
+        if mode == "beginner":
+            d.hide()
+            return
+        # isHidden, not isVisible: at start-up the window itself is not shown yet
+        mate = next((self.docks[k] for k in ("symbols", "io", "stack", "memory") if not self.docks[k].isHidden()), None)
+        if mate is None:
+            d.hide()  # the user had closed that whole column; do not add one
+            return
+        d.show()
+        self.tabifyDockWidget(mate, d)
+        mate.raise_()
 
     def _fit_to_screen(self):
         """Shrink/move the (non-maximised) window so it lies inside the available screen area."""

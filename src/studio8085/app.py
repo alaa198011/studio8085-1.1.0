@@ -53,10 +53,33 @@ def selftest() -> int:
         return 1
     why = w.machine.run_to_end()
     ok = why is Stop.HALT and w.machine.cpu.hl == 961 and not w.grab().isNull()
+    detail = f"{why} HL={w.machine.cpu.hl}"
+    if ok:  # the Virtual 8085 Trainer Kit: switches -> IN -> A -> OUT -> LEDs, then disconnect
+        ok, detail = _selftest_trainer(w)
     QSettings().clear()
-    print("selftest ok" if ok else f"selftest FAILED: {why} HL={w.machine.cpu.hl}")
+    print("selftest ok" if ok else f"selftest FAILED: {detail}")
     w.editor.document().setModified(False)
     return 0 if ok else 1
+
+
+def _selftest_trainer(w) -> tuple[bool, str]:
+    from .core.machine import Stop
+    kit, m = w.kit, w.machine
+    if not kit.enabled:
+        kit.set_enabled(True)
+    w._load_example("trainer/E1_read_switches_control_leds.asm")
+    if not w._assemble_and_load():
+        return False, "trainer example does not assemble"
+    kit.set_switches(0xA5)
+    why = m.run_to_end()
+    w.trainer.refresh()  # the panel may be hidden (Beginner mode); draw it anyway
+    leds = sum(1 << lamp.bit for lamp in w.trainer.leds if lamp.on)
+    ok = (why is Stop.HALT and m.cpu.a == 0xA5 and kit.leds.value == 0xA5 and leds == 0xA5
+          and m.out_log and m.out_log[-1][1:] == (0x01, 0xA5) and not w.trainer.grab().isNull())
+    hooks = kit.bus._prev_in, kit.bus._prev_out
+    kit.set_enabled(False)
+    ok = ok and (m.cpu.on_in, m.cpu.on_out) == hooks
+    return ok, f"trainer kit: {why} A={m.cpu.a:02X}h LEDs={kit.leds.value:02X}h shown={leds:02X}h"
 
 
 def main(argv: list[str] | None = None) -> int:

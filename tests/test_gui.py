@@ -1091,6 +1091,127 @@ def test_beginner_memory_panel_is_not_squeezed_on_a_720_screen(app):
         _settle(app, 2)
 
 
+_MEMORY_COLUMNS_CHECK = r"""
+def memory_columns_unreachable(w, app):
+    # Columns 0-F and ASCII of the hex table that cannot be brought fully into view by scrolling.
+    # For each column: scroll the table to it (and the dock's own scroll area, if the panel is
+    # squeezed); the cell of row 0 must then lie entirely inside the on-screen part of the viewport.
+    from PySide6.QtCore import QPoint, QRect
+    from PySide6.QtGui import QRegion
+    from PySide6.QtWidgets import QAbstractItemView
+    t = w.memory.table
+    holder = w.docks["memory"].widget()
+    bad = []
+    # a column the user cannot see at first must be reachable with a visible scroll bar (scrollTo
+    # alone also works with ScrollBarAlwaysOff, which a mouse user could not scroll)
+    t.horizontalScrollBar().setValue(0)
+    app.processEvents()
+    vp_rect = QRect(QPoint(0, 0), t.viewport().size())
+    if not all(vp_rect.contains(t.visualRect(t.model().index(0, c))) for c in range(17)):
+        if not t.horizontalScrollBar().isVisible():
+            bad.append(("table needs horizontal scrolling but shows no scroll bar",))
+    if hasattr(holder, "ensureVisible") and holder.widget() is not None:
+        if holder.widget().width() > holder.viewport().width() and not holder.horizontalScrollBar().isVisible():
+            bad.append(("memory dock is cut off horizontally without a scroll bar",))
+        if holder.widget().height() > holder.viewport().height() and not holder.verticalScrollBar().isVisible():
+            bad.append(("memory dock is cut off vertically without a scroll bar",))
+    for col in range(17):
+        idx = t.model().index(0, col)
+        t.scrollTo(idx, QAbstractItemView.ScrollHint.EnsureVisible)
+        for _ in range(2):
+            app.processEvents()
+        r = t.visualRect(idx)
+        if hasattr(holder, "ensureVisible") and holder.widget() is not None:  # the dock's scroll area
+            c = t.viewport().mapTo(holder.widget(), r.center())
+            holder.ensureVisible(c.x(), c.y(), r.width() // 2 + 2, r.height() // 2 + 2)
+            for _ in range(2):
+                app.processEvents()
+            r = t.visualRect(idx)
+        vp = t.viewport()
+        inside = QRect(QPoint(0, 0), vp.size()).contains(r)
+        shown = (vp.visibleRegion() & QRegion(r)) == QRegion(r)
+        if r.isEmpty() or not inside or not shown:
+            bad.append((col, r.x(), r.width(), vp.width(), t.horizontalScrollBar().isVisible()))
+    return bad
+"""
+exec(_MEMORY_COLUMNS_CHECK)
+
+
+@pytest.mark.parametrize("mode", ["beginner", "advanced"])
+@pytest.mark.parametrize("size", [(1024, 600), (1280, 720), (1366, 768), (1920, 1000)])
+def test_every_memory_column_can_be_scrolled_into_view(app, mode, size):
+    """Columns 0-F and the ASCII column of the hex table must each be reachable: fully visible, or
+    brought fully into view by scrolling (regression: the window-size work must not cut a column off)."""
+    w = make_window(app, mode)
+    try:
+        w.resize(*size)
+        w.show()
+        _settle(app)
+        assert memory_columns_unreachable(w, app) == [], (mode, size)
+    finally:
+        w.editor.document().setModified(False)
+        w.close()
+        _settle(app, 2)
+
+
+@pytest.mark.parametrize("mode", ["beginner", "advanced"])
+@pytest.mark.parametrize("size", [(1024, 600), (1280, 720), (1366, 768)])
+def test_every_memory_column_can_be_scrolled_into_view_with_a_large_interface_font(app, mode, size):
+    """Same check with a 14 pt interface font (bigger rows and headers, as on some real screens)."""
+    w = make_window(app, mode)
+    try:
+        w.resize(*size)
+        w.show()
+        _set_ui_font(w, 14)
+        _settle(app)
+        assert memory_columns_unreachable(w, app) == [], (mode, size)
+    finally:
+        _set_ui_font(w, 0)
+        w.editor.document().setModified(False)
+        w.close()
+        _settle(app, 2)
+
+
+_HIDPI_MEMORY_PROBE = r"""
+import sys, tempfile
+sys.path.insert(0, sys.argv[1])
+from studio8085.app import use_system_fonts_offscreen
+use_system_fonts_offscreen()
+from PySide6.QtCore import QSettings
+from PySide6.QtWidgets import QApplication
+QApplication.setOrganizationName("S85hidpimem"); QApplication.setApplicationName("S85hidpimem")
+QSettings.setDefaultFormat(QSettings.Format.IniFormat)
+QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, tempfile.mkdtemp())
+app = QApplication([])
+QSettings().setValue("mode", sys.argv[2])
+from studio8085.ui.mainwindow import MainWindow
+w = MainWindow(); w.resize(int(sys.argv[3]), int(sys.argv[4])); w.show()
+for _ in range(5):
+    app.processEvents()
+""" + _MEMORY_COLUMNS_CHECK + r"""
+bad = memory_columns_unreachable(w, app)
+print("dpr", w.devicePixelRatio(), "mode", w.mode, "unreachable", bad)
+w.editor.document().setModified(False)
+sys.exit(1 if bad or w.mode != sys.argv[2] else 0)
+"""
+
+
+@pytest.mark.parametrize("mode", ["beginner", "advanced"])
+@pytest.mark.parametrize("phys", [(1366, 768), (1920, 1080)])
+def test_every_memory_column_can_be_scrolled_into_view_at_150_percent(mode, phys):
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+    src = str(Path(__file__).resolve().parents[1] / "src")
+    env = dict(os.environ, QT_SCALE_FACTOR="1.5", QT_QPA_PLATFORM=os.environ.get("QT_QPA_PLATFORM", "offscreen"))
+    w, h = round(phys[0] / 1.5), round(phys[1] / 1.5)
+    r = subprocess.run([sys.executable, "-c", _HIDPI_MEMORY_PROBE, src, mode, str(w), str(h)],
+                       env=env, capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "dpr 1.5" in r.stdout, r.stdout
+
+
 @pytest.mark.parametrize("mode", ["beginner", "advanced"])
 @pytest.mark.parametrize("size", [(800, 600), (960, 540), (1280, 720)])
 def test_editor_keeps_a_usable_share_of_narrow_windows(app, mode, size):

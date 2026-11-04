@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import (QAbstractTableModel, QModelIndex, QPointF, QRectF, Qt, Signal)
+from PySide6.QtCore import (QAbstractTableModel, QModelIndex, QPointF, QRectF, QSize, Qt, Signal)
 from PySide6.QtGui import QBrush, QColor, QFont, QFontMetrics, QImage, QPainter, QPen
 from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QHBoxLayout, QHeaderView, QLabel,
                                QLineEdit, QPushButton, QSplitter, QTableView, QVBoxLayout, QWidget)
@@ -363,6 +363,20 @@ class HexModel(QAbstractTableModel):
         return True
 
 
+class HexTable(QTableView):
+    """The hex editor table. Its minimum height always leaves room for the column header, two rows and
+    the horizontal scroll bar, so a squeezed Memory Map shows real bytes (or scrolls as a whole)
+    instead of a header with no visible row."""
+
+    def minimumSizeHint(self):
+        m = super().minimumSizeHint()
+        hh = self.horizontalHeader()
+        h = ((0 if hh.isHidden() else hh.sizeHint().height())
+             + 2 * self.verticalHeader().defaultSectionSize()
+             + self.horizontalScrollBar().sizeHint().height() + 2 * self.frameWidth())
+        return m.expandedTo(QSize(m.width(), h))
+
+
 class MemoryPanel(QWidget):
     """Heatmap on top, hex editor below, with a go-to box and mode selector."""
 
@@ -374,7 +388,7 @@ class MemoryPanel(QWidget):
         self.machine = None
         self.heat = HeatmapWidget()
         self.model = HexModel(self)
-        self.table = QTableView()
+        self.table = HexTable()
         self.table.setModel(self.model)
         self.table.setAlternatingRowColors(False)
         self.table.setShowGrid(False)

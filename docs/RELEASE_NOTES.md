@@ -1,5 +1,28 @@
 # Release notes
 
+## Unreleased - Phase 1: Virtual 8085 Trainer Kit
+
+### New
+- **Virtual 8085 Trainer Kit** dock (*Lab > Show the Virtual 8085 Trainer Kit*, or *View*): 8 toggle switches SW7...SW0 on
+  `IN 00H`, 8 LEDs LED7...LED0 on `OUT 01H` and a seven-segment digit with decimal point on `OUT 02H`. These are virtual teaching
+  port assignments, not real kit addresses; they can be changed (*Lab > Trainer Kit Port Mapping...*, validated, conflicts rejected).
+  Switches work with the mouse and the keyboard (Space/Enter, arrows) and show their value in binary and hex; the LEDs and the display
+  follow every `OUT` while stepping and while running. Vector drawing, sharp at 150 % / 200 %, readable in Dark, Light and High Contrast.
+- **Seven-segment modes:** *Raw segment bits* (default, active-high: bit0 = a ... bit6 = g, bit7 = DP) and *Hex decode* (the low nibble
+  shows 0-F). Changing the mode never touches the CPU.
+- **Experiment 1: Read Switches and Control LEDs** (*Lab* menu): a guided set - predict - assemble - step - compare flow. The answer is
+  not shown before the student predicts (unless they press *Help me*); the comparison reads the real accumulator and LED latch.
+  Lab programs for the experiment, a raw-segment pattern and a hex-decode display (`examples/trainer/`).
+- `docs/TRAINER_KIT.md`: ports, bit order, segment map, polarity, hex table, resets, limitations, how to run the lab.
+- `--selftest` also checks the trainer kit (switches -> `IN` -> A -> `OUT` -> LEDs, and that disconnecting restores the CPU hooks).
+
+### Compatibility
+- No CPU instruction changed. The kit attaches to the existing `IN`/`OUT` hooks and chains to the debugger's OUT log; the trace and
+  the Output log are unchanged. With *Kit connected* unchecked it is detached and `IN`/`OUT` behave byte-for-byte as in 1.1.0 (tested).
+- While connected, the switches own their port: `IN 00H` reads them and the I/O Ports row 00h mirrors them (typing there sets them).
+- Beginner mode does not show the kit until it is opened from the Lab or View menu, so the Beginner layout is unchanged. Layouts saved
+  by 1.1.0 are restored as before.
+
 ## 1.1.0 - learning-focused release
 
 Built from a review of 1.0 whose main finding was: *the core feature set is already substantial; make it a clearer learning tool.*

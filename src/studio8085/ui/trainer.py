@@ -10,7 +10,7 @@ Refreshing is pull-based: the main window calls :meth:`TrainerPanel.refresh` fro
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen, QPolygonF, QRadialGradient
 from PySide6.QtWidgets import (QAbstractButton, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
                                QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QPushButton,
@@ -642,6 +642,28 @@ class TrainerPanel(QWidget):
         lay.addWidget(self.guide)
         lay.addStretch(1)
         self.sync_from_kit()
+
+    # ------------------------------------------------------- geometry
+    def _fit_height(self):
+        """Word-wrapped text (the Experiment 1 guide) needs more height when the panel is narrow. The dock's
+        scroll area sizes the panel from its minimum, so keep the minimum height equal to what the layout
+        needs at the current width; then the text scrolls instead of being cut off."""
+        lay = self.layout()
+        if lay is None:
+            return
+        need = lay.totalHeightForWidth(self.width()) if lay.hasHeightForWidth() else lay.totalMinimumSize().height()
+        need = max(need, lay.totalMinimumSize().height())
+        if need != self.minimumHeight():
+            self.setMinimumHeight(need)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._fit_height()
+
+    def event(self, e):
+        if e.type() == e.Type.LayoutRequest:
+            QTimer.singleShot(0, self._fit_height)
+        return super().event(e)
 
     # ---------------------------------------------------------- wiring
     def set_machine(self, machine):

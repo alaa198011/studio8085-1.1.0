@@ -436,6 +436,8 @@ def _geometry_problems(w, app):
     leaves = [c for c in panel.findChildren(QWidget) if c.isVisible() and isinstance(c, (QLabel, QAbstractButton,
                                                                                           QComboBox, QLineEdit))]
     for c in leaves:
+        if isinstance(c, QLabel) and c.wordWrap() and c.heightForWidth(c.width()) > c.height() + 1:
+            bad.append(("wrapped text cut off", c.text()[:40], c.height(), c.heightForWidth(c.width())))
         if isinstance(c, QLabel) and not c.wordWrap():
             for line in c.text().split("\n"):
                 if c.fontMetrics().horizontalAdvance(line) > c.contentsRect().width() + 1:

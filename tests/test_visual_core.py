@@ -220,7 +220,9 @@ def test_breakpoint_stops_and_is_recorded_as_normal():
 
 
 def test_history_is_bounded_and_reset_clears_it():
-    m = machine("L: NOP\nJMP L\n")
+    m = machine("LP: NOP
+JMP LP
+")
     rec = StepRecorder(m, history_limit=5)
     for _ in range(20):
         step(m, rec)

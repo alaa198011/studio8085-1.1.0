@@ -424,9 +424,9 @@ class NodeItem(QGraphicsObject):
     def _paint_endpoint(self, p: QPainter, mf: QFont, small: QFont):
         r = self.rect
         p.setFont(small)
-        lines = self.extra[:3]
+        lines = self.extra[:2] if self.leds is not None else self.extra[:3]
         if self.masked:
-            lines = ["value hidden until you predict"]
+            lines = ["hidden until predicted"]
         for i, line in enumerate(lines):
             p.drawText(QRectF(8, 26 + 14 * i, r.width() - 12, 14), Qt.AlignmentFlag.AlignLeft, line)
         if self.leds is not None and not self.masked:  # eight LED dots: filled = lit (shape, not just colour)
@@ -887,6 +887,8 @@ class CpuArchitecturePanel(QWidget):
             self._rec = None
             self._pending_live = None
             self.text.clear()
+        elif self._rec is None:
+            self._show_idle()
         self._redraw()
         self._update_buttons()
 
@@ -1038,7 +1040,7 @@ class CpuArchitecturePanel(QWidget):
         for fi in self.flow_items:
             fl = fi.flow
             if phase_now is None:
-                fi.setVisible(True)
+                fi.setVisible(fl.phase > 0)  # the conceptual fetch is part of the animation, not of the final picture
                 fi.dot.setVisible(False)
                 done_dst.add(fl.dst)
             elif fl.phase < phase_now:

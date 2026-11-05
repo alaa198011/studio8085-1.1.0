@@ -254,3 +254,83 @@ def test_decode_matches_disassembler_and_operands():
     assert (d.mnemonic, d.operands, d.imm, d.length) == ("LXI", ("SP", "#16"), 0x1234, 3)
     assert capture_state(m.cpu).sp == 0xFFFF
     assert StepHistory().latest is None and KitView().enabled is False
+
+
+def test_interrupt_entry_is_a_generic_record_not_an_instruction_animation():
+    m = machine("EI\nNOP\nNOP\nHLT\n")
+    m.cpu.mem.data[0x3C] = 0x76  # RST 7.5 vector: HLT
+    rec = StepRecorder(m)
+    step(m, rec), step(m, rec)  # EI, NOP (EI takes effect after the next instruction)
+    m.cpu.m75 = False
+    m.cpu.raise_interrupt("RST7.5")
+    r = step(m, rec)
+    assert r.kind == "interrupt" and not r.detailed and r.flows == ()
+    assert r.pc_change is not None and r.post.pc == 0x3C and r.sp_change is not None
+
+
+def test_works_when_memory_access_tracking_is_off():
+    m = machine("MVI A,09H\nSTA 2000H\nLDA 2000H\nHLT\n")
+    m.cpu.mem.set_tracking(False)
+    rec = StepRecorder(m)
+    step(m, rec)
+    sta = step(m, rec)
+    lda = step(m, rec)
+    assert [(a.kind, a.addr) for a in sta.mem_accesses] == [("W", 0x2000)]  # a changed byte is still provable
+    assert lda.mem_accesses == () and not lda.tracking  # a read cannot be proven without the counters
+    assert lda.pre.reg("A") == 9
+
+
+def test_logical_family_and_cmp_leave_a_unchanged():
+    m = machine("MVI A,0F0H\nMVI B,3CH\nANA B\nCMP B\nXRA A\nHLT\n")
+    rec = StepRecorder(m)
+    step(m, rec), step(m, rec)
+    ana = step(m, rec)
+    assert ana.family == "Logical" and ana.reg_changes == (("A", 0xF0, 0x30),)
+    cmp_ = step(m, rec)
+    assert cmp_.reg_changes == () and any(f.src == "ALU" and f.dst == "FLAGS" for f in cmp_.flows)
+    assert not any(f.dst == "A" and f.src == "ALU" for f in cmp_.flows)
+    xra = step(m, rec)
+    assert ("Z", 0, 1) in xra.flag_changes and any("Z changed" in t for t in xra.flag_why)
+
+
+def test_inx_dcx_inr_dcr_stay_in_the_arithmetic_family():
+    m = machine("LXI H,00FFH\nINX H\nDCX H\nINR L\nDCR L\nHLT\n")
+    rec = StepRecorder(m)
+    step(m, rec)
+    inx = step(m, rec)
+    assert inx.family == "Arithmetic" and inx.reg_changes == (("H", 0, 1), ("L", 0xFF, 0x00)) and inx.flag_changes == ()
+    dcx = step(m, rec)
+    assert dcx.reg_changes == (("H", 1, 0), ("L", 0x00, 0xFF))
+    inr = step(m, rec)
+    assert ("Z", 0, 1) in inr.flag_changes and inr.reg_changes == (("L", 0xFF, 0x00),)
+
+
+def test_lhld_shld_lxi_and_hlt_nop():
+    m = machine("LXI H,2000H\nSHLD 3000H\nLHLD 3000H\nNOP\nHLT\n")
+    rec = StepRecorder(m)
+    lxi = step(m, rec)
+    assert lxi.family == "Data transfer" and lxi.reg_changes == (("H", 0, 0x20),)
+    shld = step(m, rec)
+    assert sorted((a.kind, a.addr) for a in shld.mem_accesses) == [("W", 0x3000), ("W", 0x3001)]
+    lhld = step(m, rec)
+    assert sorted((a.kind, a.addr) for a in lhld.mem_accesses) == [("R", 0x3000), ("R", 0x3001)]
+    nop, hlt = step(m, rec), step(m, rec)
+    assert nop.family == hlt.family == "Other" and nop.reg_changes == () and hlt.post.halted
+
+
+def test_reduced_motion_environment_switch(monkeypatch):
+    from studio8085.ui.cpuview import os_prefers_reduced_motion
+    monkeypatch.setenv("S85_REDUCE_MOTION", "1")
+    assert os_prefers_reduced_motion()
+    monkeypatch.setenv("S85_REDUCE_MOTION", "0")
+    assert isinstance(os_prefers_reduced_motion(), bool)
+
+
+def test_recorder_never_raises_into_the_debugger():
+    m = machine("NOP\nHLT\n")
+    rec = StepRecorder(m)
+    rec.begin("into")
+    m.step_into()
+    m.out_log = None  # break an assumption on purpose
+    m.out_count = 5
+    assert rec.end() is None and rec.last_error

@@ -477,3 +477,40 @@ def test_labs_do_not_alter_the_approved_phase1_labs(app):
         assert kit_view(w.kit).seg_port == 2 and w.kit.display.mode == "raw"
     finally:
         close(w, app)
+
+
+def test_pause_and_resume_stepping_stays_consistent(app):
+    w = new_window(app, "advanced")
+    try:
+        p = open_panel(w, app)
+        load(w, "LP: INR B\n    JMP LP\n")
+        w.cmd_run()
+        t0 = time.time()
+        while time.time() - t0 < 0.3:
+            _settle(app, 1)
+            time.sleep(0.005)
+        w.cmd_pause()
+        _settle(app)
+        assert w.state == "paused" and p._rec is not None and p._rec.kind == "multi"
+        ic = w.machine.cpu.icount
+        step(w, app)
+        assert w.machine.cpu.icount == ic + 1 and p._rec.kind == "instr" and p._rec.n_instr == 1
+        assert p.nodes["PC"].value[0] == w.machine.cpu.pc
+    finally:
+        close(w, app)
+
+
+def test_restart_during_a_lab_keeps_switches_and_clears_the_view(app):
+    w = new_window(app, "advanced")
+    try:
+        p = open_panel(w, app)
+        w.kit.set_switches(0x3C)
+        w.load_visual_lab("C")
+        step(w, app, 2)
+        assert w.kit.leds.value == 0x3C and p.nodes["PORT_OUT"].leds == 0x3C
+        w.cmd_restart()
+        _settle(app)
+        assert w.kit.switches.value == 0x3C and not w.kit.leds.written and p._rec is None
+        assert p.nodes["PORT_OUT"].leds is None
+    finally:
+        close(w, app)

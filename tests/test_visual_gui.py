@@ -45,9 +45,15 @@ def panel_texts(p):
 def test_panel_is_opt_in_and_does_not_change_the_existing_panel_sets(app):
     w = new_window(app, "advanced")
     try:
-        assert "cpuview" not in w.docks and not w.cpu_dock.isVisible()
+        assert "cpuview" not in w.docks and w.cpu_dock is None and w.cpu_panel is None  # built on first use
         assert not w.visual.enabled  # hidden: no instrumentation at all
-        assert any(a is w.cpu_dock.toggleViewAction() for m in w.menuBar().findChildren(QMenu) for a in m.actions())
+        assert any(a is w.a_cpu_view for m in w.menuBar().findChildren(QMenu) for a in m.actions())
+        w.a_cpu_view.setChecked(True)  # the View menu entry opens it
+        _settle(app)
+        assert w.cpu_dock.isVisible() and w.a_cpu_view.isChecked()
+        w.a_cpu_view.setChecked(False)
+        _settle(app)
+        assert not w.cpu_dock.isVisible()
         assert all(d.isVisible() for d in w.docks.values())
         open_panel(w, app)
         assert w.cpu_dock.isVisible() and w.visual.enabled and w.cpu_dock.isFloating()

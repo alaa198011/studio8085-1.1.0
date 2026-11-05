@@ -197,6 +197,8 @@ class MainWindow(QMainWindow):
         self.editor.caret_moved.connect(lambda l, c: self._update_code_label())
         self._load_example("beginner/01_first_program.asm" if self.prefs.get("mode") == "beginner"
                            else "02_sum_array.asm")
+        if str(self.prefs.q.value("cpu/open", False)).lower() == "true":
+            QTimer.singleShot(0, self.show_cpu_view)  # the CPU Architecture panel was open when it was last closed
 
     # ============================================================== build
     def _build_panels(self):
@@ -228,10 +230,8 @@ class MainWindow(QMainWindow):
         # Phase 2: Interactive CPU Architecture (a pure view fed by the passive StepRecorder)
         self.visual = StepRecorder(self.machine)
         self.visual.enabled = False  # switched on while the panel is visible: zero cost otherwise
-        self.cpu_panel = CpuArchitecturePanel()
-        self.cpu_panel.labs.load_requested.connect(self.load_visual_lab)
-        self.cpu_panel.labs.check_requested.connect(self.check_visual_lab)
-        self.cpu_panel.settings_changed.connect(self._save_cpu_settings)
+        self.cpu_panel: CpuArchitecturePanel | None = None  # built the first time it is opened (see _ensure_cpu_view)
+        self.cpu_dock: QDockWidget | None = None
         self.io.model.dataChanged.connect(self._io_edited)
         for p in (self.registers, self.flags, self.stack, self.io, self.memory, self.symbols, self.interrupts,
                   self.explain):
@@ -284,17 +284,6 @@ class MainWindow(QMainWindow):
                           | QDockWidget.DockWidgetFeature.DockWidgetClosable)
             self.docks[key] = d
             d.visibilityChanged.connect(lambda vis, w=widget: vis and self._refresh_widget(w))
-        d = QDockWidget(CPU_TITLE, self)
-        d.setObjectName("cpuview")
-        d.setWidget(DockScroll(self.cpu_panel))
-        d.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetMovable | QDockWidget.DockWidgetFeature.DockWidgetFloatable
-                      | QDockWidget.DockWidgetFeature.DockWidgetClosable)
-        self.cpu_dock = d  # deliberately not in self.docks: opt-in, floating by default, never changes the panel sets
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, d)
-        d.setFloating(True)
-        d.hide()
-        d.visibilityChanged.connect(self._cpu_visibility)
-        self.cpu_panel.apply_settings(**self._cpu_settings())
         self.registers.setMinimumWidth(250)
         self.memory.setMinimumWidth(470)
         self._default_layout()
@@ -586,7 +575,10 @@ class MainWindow(QMainWindow):
         m = mb.addMenu("&View")
         for key in ("registers", "flags", "explain", "instructions", "interrupts", "memory", "stack", "io", "symbols", "problems", "listing", "output", "trace", "trainer"):
             m.addAction(self.docks[key].toggleViewAction())
-        m.addAction(self.cpu_dock.toggleViewAction())
+        self.a_cpu_view = QAction(CPU_TITLE, self, checkable=True)
+        self.a_cpu_view.setToolTip("Show or hide the Interactive CPU Architecture panel (floating by default)")
+        self.a_cpu_view.toggled.connect(self._toggle_cpu_view)
+        m.addAction(self.a_cpu_view)
         m.addSeparator()
         self.theme_menu = m.addMenu("&Theme")
         self.theme_group = QActionGroup(self)
@@ -719,8 +711,10 @@ class MainWindow(QMainWindow):
         apply_theme(QApplication.instance(), self.theme, font)
         t = self.theme
         self.editor.set_theme(t, self.prefs.syntax_overrides(t.dark))
-        for p in (self.memory, self.registers, self.stack, self.io, self.problems, self.listing, self.trainer, self.cpu_panel):
+        for p in (self.memory, self.registers, self.stack, self.io, self.problems, self.listing, self.trainer):
             p.set_theme(t)
+        if self.cpu_panel is not None:
+            self.cpu_panel.set_theme(t)
         self._refresh_icons()
         for a in self.theme_group.actions():
             a.setChecked(a.text() == t.name)
@@ -1104,7 +1098,8 @@ class MainWindow(QMainWindow):
             return False
         self.machine.load(res, keep_memory=self.prefs.get("keep_memory"))
         self.visual.reset()
-        self.cpu_panel.reset()
+        if self.cpu_panel is not None:
+            self.cpu_panel.reset()
         self.kit.reset_outputs()  # assemble / restart / reload: LEDs and display blank, switches kept
         self.stack.reset()
         self._before = None
@@ -1179,7 +1174,7 @@ class MainWindow(QMainWindow):
         rec = self.visual.end()
         self.refresh_all()
         self._update_last("run")
-        if rec is not None:
+        if rec is not None and self.cpu_panel is not None:
             self.cpu_panel.show_record(rec)
         self.say(f"Paused at {self.machine.cpu.pc:04X}h", "warn")
 
@@ -1291,7 +1286,7 @@ class MainWindow(QMainWindow):
         rec = self.visual.end()
         self.refresh_all()
         self._update_last(self._mode)
-        if rec is not None:
+        if rec is not None and self.cpu_panel is not None:
             self.cpu_panel.show_record(rec)
 
     def _raise_irq(self, name: str, rst: int):
@@ -1350,7 +1345,8 @@ class MainWindow(QMainWindow):
         self.output.set_concealed(ports)
         self.trace.set_concealed(on)
         self.explain.concealed = on
-        self.cpu_panel.set_concealed(on, tuple(ports))
+        if self.cpu_panel is not None:
+            self.cpu_panel.set_concealed(on, tuple(ports))
         if on:
             self.explain.clear_last()
         self.explain.refresh_next(self.explain._active)
@@ -1486,14 +1482,50 @@ class MainWindow(QMainWindow):
         p.set("cpu_decimal", s["decimal"])
         p.set("cpu_speed", s["speed"])
 
+    def _ensure_cpu_view(self):
+        """Build the panel and its (floating) dock on first use: users who never open it pay nothing."""
+        if self.cpu_panel is not None:
+            return
+        self.cpu_panel = CpuArchitecturePanel()
+        self.cpu_panel.set_theme(self.theme)
+        self.cpu_panel.labs.load_requested.connect(self.load_visual_lab)
+        self.cpu_panel.labs.check_requested.connect(self.check_visual_lab)
+        self.cpu_panel.settings_changed.connect(self._save_cpu_settings)
+        self.cpu_panel.apply_settings(**self._cpu_settings())
+        d = QDockWidget(CPU_TITLE, self)
+        d.setObjectName("cpuview")
+        d.setWidget(DockScroll(self.cpu_panel))
+        d.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetMovable | QDockWidget.DockWidgetFeature.DockWidgetFloatable
+                      | QDockWidget.DockWidgetFeature.DockWidgetClosable)
+        self.cpu_dock = d  # deliberately not in self.docks: opt-in, floating by default, never changes the panel sets
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, d)
+        d.setFloating(True)
+        d.hide()
+        d.visibilityChanged.connect(self._cpu_visibility)
+        # Experiment 1 may already be hiding the answer: the new panel must start masked
+        if self.trainer.concealed:
+            p = self.kit.ports
+            self.cpu_panel.set_concealed(True, (p.switches_in, p.leds_out, p.seven_segment_out))
+
+    def _toggle_cpu_view(self, on: bool):
+        if on:
+            self.show_cpu_view()
+        elif self.cpu_dock is not None:
+            self.cpu_dock.hide()
+
     def _cpu_visibility(self, vis: bool):
         """The recorder only runs while the panel is visible; hidden means no instrumentation at all."""
         self.visual.enabled = bool(vis)
+        if hasattr(self, "a_cpu_view"):
+            self.a_cpu_view.blockSignals(True)
+            self.a_cpu_view.setChecked(bool(vis))
+            self.a_cpu_view.blockSignals(False)
         if vis:
             self.cpu_panel.set_kit(kit_view(self.kit))
             self.cpu_panel.show_live(capture_state(self.machine.cpu), immediate=True)
 
     def show_cpu_view(self):
+        self._ensure_cpu_view()
         d = self.cpu_dock
         first = not d.isVisible()
         d.show()
@@ -1503,7 +1535,12 @@ class MainWindow(QMainWindow):
             w, h = (1000, 760)
             if avail is not None:
                 w, h = min(w, avail.width() - 80), min(h, avail.height() - 80)
-            d.resize(w, h)
+            geo = self.prefs.q.value("cpu/geometry")
+            if isinstance(geo, QByteArray) and not geo.isEmpty() and not getattr(self, "_cpu_placed", False):
+                d.restoreGeometry(geo)
+                self._cpu_placed = True
+            else:
+                d.resize(w, h)
             if avail is not None and not getattr(self, "_cpu_placed", False):
                 g = self.geometry()
                 x = max(avail.left(), min(g.right() - w - 20, avail.right() - w))
@@ -1534,6 +1571,7 @@ class MainWindow(QMainWindow):
             self.say(f"{lab.title}: program assembled. Step Into (F11) and watch the CPU Architecture panel.", "ok")
 
     def check_visual_lab(self, key: str):
+        self._ensure_cpu_view()
         self.cpu_panel.labs.show_feedback(capture_state(self.machine.cpu), kit_view(self.kit))
 
     # ============================================================= refresh
@@ -1572,7 +1610,7 @@ class MainWindow(QMainWindow):
                 w.refresh()
         self._pull_out_log()
         self._update_exec_line()
-        if self.cpu_dock.isVisible():
+        if self.cpu_dock is not None and self.cpu_dock.isVisible():
             self.cpu_panel.set_kit(kit_view(self.kit))
             self.cpu_panel.show_live(capture_state(cpu), immediate=self.state != "running")
         if self.state != "running":
@@ -1863,6 +1901,9 @@ class MainWindow(QMainWindow):
             return
         self.timer.stop()
         q = self.prefs.q
+        q.setValue("cpu/open", bool(self.cpu_dock is not None and self.cpu_dock.isVisible()))
+        if self.cpu_dock is not None and self.cpu_dock.isFloating():
+            q.setValue("cpu/geometry", self.cpu_dock.saveGeometry())
         q.setValue("window/geometry", self.saveGeometry())
         q.setValue("window/state", self.saveState())
         if self.mode == "advanced":

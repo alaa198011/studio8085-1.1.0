@@ -80,7 +80,7 @@ def app_run(panel: bool) -> dict:
     assert w._assemble_and_load()
     w.speed.setCurrentIndex(0)  # Max speed
     n0 = w.machine.cpu.icount
-    redraws0 = w.cpu_panel.redraws
+    redraws0 = w.cpu_panel.redraws if panel else 0
     w.cmd_run()
     t0 = time.perf_counter()
     while time.perf_counter() - t0 < SECONDS:
@@ -88,7 +88,7 @@ def app_run(panel: bool) -> dict:
     dt = time.perf_counter() - t0
     done = w.machine.cpu.icount - n0
     w.cmd_pause()
-    out = {"ips": done / dt, "redraws": w.cpu_panel.redraws - redraws0, "seconds": dt}
+    out = {"ips": done / dt, "redraws": (w.cpu_panel.redraws - redraws0) if panel else 0, "seconds": dt}
     w.editor.document().setModified(False)
     w.close()
     app.processEvents()

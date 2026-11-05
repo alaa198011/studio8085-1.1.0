@@ -898,6 +898,8 @@ class CpuArchitecturePanel(QWidget):
 
     # -------------------------------------------------------------- feeds
     def set_kit(self, kit: KitView):
+        if kit == self._kit:  # nothing changed: no redraw (this is called on every refresh while a program runs)
+            return
         self._kit = kit
         self._redraw()
 

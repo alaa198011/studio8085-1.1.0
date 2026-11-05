@@ -1331,6 +1331,8 @@ class MainWindow(QMainWindow):
         """The user flipped a switch: the I/O Ports row of the switch port mirrors it."""
         if self.io.isVisible():
             self.io.refresh()
+        if self.cpu_dock is not None and self.cpu_dock.isVisible():
+            self.cpu_panel.set_kit(kit_view(self.kit))  # the input port node shows the switches
         if self.state in ("ready", "paused", "halted"):
             self.explain.refresh_next(self.machine.program is not None)  # "IN 00h will read ..." stays true
 

@@ -520,3 +520,19 @@ def test_restart_during_a_lab_keeps_switches_and_clears_the_view(app):
         assert p.nodes["PORT_OUT"].leds is None
     finally:
         close(w, app)
+
+
+def test_flipping_a_switch_updates_the_input_port_node(app):
+    w = new_window(app, "advanced")
+    try:
+        p = open_panel(w, app)
+        load(w, IO_PROG)
+        w.kit.set_switches(0x00)
+        w._trainer_changed()
+        assert any("00h" in line for line in p.nodes["PORT_IN"].extra)
+        w.trainer.switches[0].click()  # SW7 on
+        _settle(app)
+        assert w.kit.switches.value == 0x80
+        assert any("80h" in line for line in p.nodes["PORT_IN"].extra)
+    finally:
+        close(w, app)

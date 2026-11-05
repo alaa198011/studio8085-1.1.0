@@ -6,13 +6,13 @@ import time
 from importlib import resources
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, QMarginsF, QSize, Qt, QTimer
+from PySide6.QtCore import QByteArray, QEvent, QMarginsF, QSize, Qt, QTimer
 from PySide6.QtGui import (QAction, QActionGroup, QFont, QKeySequence, QPageLayout, QPageSize, QPdfWriter,
                            QShortcut, QTextDocument)
-from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDockWidget, QFileDialog, QFrame,
-                               QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMainWindow,
-                               QMessageBox, QPushButton, QToolBar, QToolButton, QVBoxLayout,
-                               QWidget)
+from PySide6.QtWidgets import (QAbstractScrollArea, QApplication, QCheckBox, QComboBox, QDockWidget,
+                               QFileDialog, QFrame, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
+                               QMainWindow, QMessageBox, QPushButton, QScrollArea, QToolBar, QToolButton,
+                               QVBoxLayout, QWidget)
 
 from .. import APP_NAME, IDEA_AFFILIATION, IDEA_AUTHOR, __version__
 from .. import APP_NAME as _APP
@@ -22,6 +22,7 @@ from ..core.catalog import FORM_OF
 from ..core.explain import flag_notes
 from ..core.machine import Machine, Stop
 from ..core.opcodes import TABLE
+from ..core.peripherals import PeripheralConfigError, PortMap, TrainerKit
 from ..core.trace import to_csv, to_html, to_markdown
 from .docks import (ExplainPanel, FlagsPanel, InterruptPanel, IOPanel, ListingPanel, OutputPanel,
                     ProblemsPanel, RegistersPanel, StackPanel, SymbolsPanel, TracePanel, parse_hex)
@@ -33,6 +34,8 @@ from .instructions import InstructionPanel
 from .memory import MemoryPanel
 from .settings import Prefs, PreferencesDialog
 from .themes import Theme, apply_theme, available_themes
+from .trainer import TITLE as TRAINER_TITLE
+from .trainer import PortMapDialog, TrainerPanel
 
 SPEEDS = [("Max speed", 0), ("100,000 instr/s", 100_000), ("10,000 instr/s", 10_000),
           ("1,000 instr/s", 1_000), ("100 instr/s", 100), ("10 instr/s", 10), ("1 instr/s", 1)]
@@ -85,6 +88,55 @@ class FindBar(QFrame):
         self.editor.highlight_matches(self.text.text(), self.case.isChecked())
 
 
+class DockScroll(QScrollArea):
+    """Holds a dock panel so the dock can be made smaller than the panel's minimum size.
+
+    Several panels have a rigid minimum (the heatmap, the flag buttons, the interrupt pins...). Inside a
+    dock, those minimums add up and forced the main window to about 820 x 900 px in Advanced mode, more
+    than a 1280 x 720 or 1366 x 768 screen offers. In this scroll area the panel still fills the dock and
+    looks exactly as before whenever the dock is at least as big as the panel's minimum; only when the
+    window is smaller do scroll bars appear instead of the window growing past the screen.
+    """
+
+    def __init__(self, panel: QWidget):
+        super().__init__()
+        self.setObjectName("DockScroll")
+        # Not widgetResizable: for a panel with word-wrapped labels (height-for-width) QScrollArea would
+        # keep it at its *preferred* height and scroll, instead of letting its tables shrink first.
+        self.setWidgetResizable(False)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)  # keyboard focus and tab order stay on the panel
+        self.setAutoFillBackground(False)
+        self.viewport().setAutoFillBackground(False)
+        self.setWidget(panel)
+        panel.installEventFilter(self)
+
+    def _panel_minimum(self) -> QSize:
+        p = self.widget()
+        return p.minimumSize().expandedTo(p.minimumSizeHint())
+
+    def _fit_panel(self):
+        """The panel fills the viewport, but never gets smaller than its minimum (then it scrolls)."""
+        p = self.widget()
+        if p is None:
+            return
+        size = self.viewport().size().expandedTo(self._panel_minimum())
+        if p.size() != size:
+            p.resize(size)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._fit_panel()
+
+    def eventFilter(self, obj, e):
+        if obj is self.widget() and e.type() == QEvent.Type.LayoutRequest:  # minimum may have changed
+            QTimer.singleShot(0, self._fit_panel)
+        return super().eventFilter(obj, e)
+
+    def sizeHint(self):  # lay the docks out at the panel's natural size, as without the scroll area
+        return self.widget().sizeHint() if self.widget() is not None else super().sizeHint()
+
+
 class MainWindow(QMainWindow):
     def __init__(self, prefs: Prefs | None = None):
         super().__init__()
@@ -110,6 +162,8 @@ class MainWindow(QMainWindow):
         self._base_font = QApplication.font()
         self._hidden_for_focus: list[str] | None = None
         self.mode = "beginner"
+        self._lab_active = False  # a Lab menu program or Experiment 1 is in use: Beginner mode keeps the kit visible
+        self._loading_lab = False
 
         self.setWindowTitle(APP_NAME)
         self.setWindowIcon(app_icon())
@@ -156,6 +210,18 @@ class MainWindow(QMainWindow):
         self.explain = ExplainPanel()
         self.instructions = InstructionPanel()
         self.trace = TracePanel()
+        self.kit = self._make_kit()
+        self.trainer = TrainerPanel(self.kit)
+        self.trainer.set_machine(self.machine)
+        self.trainer.changed.connect(self._trainer_changed)
+        self.trainer.enabled_changed.connect(self._trainer_enabled)
+        self.trainer.mode_changed.connect(lambda m: self.prefs.set("trainer_seg_mode", m))
+        self.trainer.ports_requested.connect(self.trainer_ports)
+        self.trainer.reset_requested.connect(self.trainer_reset)
+        self.trainer.guide.ended.connect(self._end_lab)
+        self.trainer.guide.load_requested.connect(self.start_experiment_program)
+        self.trainer.concealed_changed.connect(self._apply_conceal)
+        self.io.model.dataChanged.connect(self._io_edited)
         for p in (self.registers, self.flags, self.stack, self.io, self.memory, self.symbols, self.interrupts,
                   self.explain):
             p.set_machine(self.machine)
@@ -197,11 +263,12 @@ class MainWindow(QMainWindow):
                 ("symbols", "Symbols", self.symbols), ("problems", "Problems", self.problems),
                 ("listing", "Listing", self.listing), ("output", "Output", self.output),
                 ("explain", "Explain", self.explain), ("instructions", "Instructions", self.instructions),
-                ("trace", "Trace", self.trace)]
+                ("trace", "Trace", self.trace), ("trainer", TRAINER_TITLE, self.trainer)]
         for key, title, widget in spec:
             d = QDockWidget(title, self)
             d.setObjectName(key)
-            d.setWidget(widget)
+            # panels that scroll by themselves (tables) go in directly; the others get a scroll area
+            d.setWidget(widget if isinstance(widget, QAbstractScrollArea) else DockScroll(widget))
             d.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetMovable | QDockWidget.DockWidgetFeature.DockWidgetFloatable
                           | QDockWidget.DockWidgetFeature.DockWidgetClosable)
             self.docks[key] = d
@@ -239,6 +306,8 @@ class MainWindow(QMainWindow):
         self.splitDockWidget(D["memory"], D["stack"], Qt.Orientation.Vertical)
         self.tabifyDockWidget(D["stack"], D["io"])
         self.tabifyDockWidget(D["io"], D["symbols"])
+        self.addDockWidget(R, D["trainer"])
+        self.tabifyDockWidget(D["symbols"], D["trainer"])  # Phase 1: a tab next to I/O Ports; Stack stays in front
         for k in ("problems", "listing", "output", "trace"):
             self.addDockWidget(B, D[k])
         self.tabifyDockWidget(D["problems"], D["listing"])
@@ -250,6 +319,16 @@ class MainWindow(QMainWindow):
         D["stack"].raise_()
         D["problems"].raise_()
         QTimer.singleShot(0, self._apply_default_sizes)
+
+    BEGINNER_DOCKS = ("registers", "flags", "explain", "instructions", "memory", "problems", "output")
+
+    def _enforce_beginner_docks(self):
+        """Beginner mode shows exactly the Beginner panels (plus the Trainer Kit while a lab is active), whatever
+        layout was restored. Qt's ``restoreState`` does not hide the docks that the default layout had shown, so
+        a session saved in Beginner mode used to come back with every panel."""
+        keep = set(self.BEGINNER_DOCKS) | ({"trainer"} if self._lab_active else set())
+        for k, d in self.docks.items():
+            d.setVisible(k in keep)
 
     def _beginner_layout(self):
         """Beginner mode: editor, registers, flags, memory, explanation, problems and output."""
@@ -265,15 +344,46 @@ class MainWindow(QMainWindow):
         self.splitDockWidget(D["explain"], D["memory"], Qt.Orientation.Vertical)
         self.addDockWidget(R, D["instructions"])
         self._tab(D["explain"], D["instructions"])  # the "write" and "run" guides share one pane
+        self.addDockWidget(R, D["trainer"])
+        self._tab(D["instructions"], D["trainer"])  # hidden below; View or Lab menu brings it back as a tab here
         self.addDockWidget(B, D["problems"])
         self.addDockWidget(B, D["output"])
         self.tabifyDockWidget(D["problems"], D["output"])
-        keep = {"registers", "flags", "explain", "instructions", "memory", "problems", "output"}
+        keep = set(self.BEGINNER_DOCKS) | ({"trainer"} if self._lab_active else set())
         for k, d in D.items():
             d.setVisible(k in keep)
-        D["explain"].raise_()
+        (D["trainer"] if self._lab_active else D["explain"]).raise_()
         D["problems"].raise_()
         QTimer.singleShot(0, self._apply_beginner_sizes)
+        if self._lab_active:
+            QTimer.singleShot(0, self._size_trainer_dock)
+
+    def _side_scale(self, widths: list[int]) -> float:
+        """<= 1: shrink the side columns on a narrow window so the editor keeps about 35 % of the width."""
+        return max(0.3, min(1.0, 0.65 * self.width() / sum(widths)))
+
+    def _resize_docks(self, docks: list[QDockWidget], sizes: list[int], orientation: Qt.Orientation,
+                      floor: bool = True):
+        """``resizeDocks`` that asks for at least each panel's natural minimum when there is room.
+
+        Panels in a ``DockScroll`` no longer force the window to grow, so a plain resizeDocks could give
+        them less than they need and show scroll bars even on a screen where everything fits (the hex
+        table lost its last column and the detail line). Asking for the natural minimum keeps the old
+        look whenever the window is big enough; Qt still shrinks the docks to fit a small window.
+        """
+        out = []
+        for d, size in zip(docks, sizes):
+            holder = d.widget()
+            if floor and isinstance(holder, DockScroll) and holder.widget() is not None:
+                need = holder._panel_minimum()
+                if orientation == Qt.Orientation.Vertical:
+                    chrome = max(0, d.height() - holder.height()) or 30
+                    size = max(size, need.height() + chrome)
+                else:
+                    chrome = max(0, d.width() - holder.width())
+                    size = max(size, need.width() + chrome)
+            out.append(size)
+        self.resizeDocks(docks, out, orientation)
 
     def _apply_beginner_sizes(self):
         if self.mode != "beginner":
@@ -283,17 +393,19 @@ class MainWindow(QMainWindow):
         # The sizes below are designed for a window about 900 px tall. On a shorter window (a 768 px laptop)
         # scale them down; asking for more than fits would make Qt grow the window past the screen.
         k = max(0.6, min(1.0, (self.height() - 290) / 660))
-        self.resizeDocks([D["registers"], D["explain"]], [290, 520], H)
-        self.resizeDocks([D["registers"], D["flags"]], [round(372 * k), round(200 * k)], V)
-        self.resizeDocks([D["explain"], D["memory"]], [round(400 * k), round(260 * k)], V)
-        self.resizeDocks([D["problems"]], [round(130 * min(1.0, k + 0.2))], V)
+        kx = self._side_scale([290, 520])
+        self._resize_docks([D["registers"], D["explain"]], [round(290 * kx), round(520 * kx)], H, floor=kx >= 1)
+        self._resize_docks([D["registers"], D["flags"]], [round(372 * k), round(200 * k)], V)
+        self._resize_docks([D["explain"], D["memory"]], [round(400 * k), round(260 * k)], V)
+        self._resize_docks([D["problems"]], [round(130 * min(1.0, k + 0.2))], V)
 
     def _compact_layout(self):
         """One tabbed column on the right and a short strip at the bottom (small screens)."""
         R, B = Qt.DockWidgetArea.RightDockWidgetArea, Qt.DockWidgetArea.BottomDockWidgetArea
         self._reset_docks()
         D = self.docks
-        order = ["registers", "flags", "explain", "instructions", "memory", "stack", "io", "symbols", "interrupts"]
+        order = ["registers", "flags", "explain", "instructions", "memory", "stack", "io", "symbols", "interrupts",
+                 "trainer"]
         for k in order:
             self.addDockWidget(R, D[k])
         for a, b in zip(order, order[1:]):
@@ -321,10 +433,14 @@ class MainWindow(QMainWindow):
             return
         D = self.docks
         H, V = Qt.Orientation.Horizontal, Qt.Orientation.Vertical
-        self.resizeDocks([D["registers"], D["memory"]], [290, 600], H)
-        self.resizeDocks([D["registers"], D["flags"]], [352, 308], V)
-        self.resizeDocks([D["memory"], D["stack"]], [480, 200], V)
-        self.resizeDocks([D["problems"]], [200], V)
+        # Designed for a window about 950 px tall; scale the heights down on shorter windows (720/768 px
+        # screens) so the editor keeps its share instead of the bottom panels taking it.
+        k = max(0.5, min(1.0, (self.height() - 290) / 660))
+        kx = self._side_scale([290, 600])
+        self._resize_docks([D["registers"], D["memory"]], [round(290 * kx), round(600 * kx)], H, floor=kx >= 1)
+        self._resize_docks([D["registers"], D["flags"]], [round(352 * k), round(308 * k)], V)
+        self._resize_docks([D["memory"], D["stack"]], [round(480 * k), round(200 * k)], V)
+        self._resize_docks([D["problems"]], [round(200 * k)], V)
 
     def _act(self, text, slot, shortcut=None, icon=None, color="text", tip=None, checkable=False):
         a = QAction(text, self)
@@ -446,7 +562,7 @@ class MainWindow(QMainWindow):
             self.compat_menu.addAction(a)
 
         m = mb.addMenu("&View")
-        for key in ("registers", "flags", "explain", "instructions", "interrupts", "memory", "stack", "io", "symbols", "problems", "listing", "output", "trace"):
+        for key in ("registers", "flags", "explain", "instructions", "interrupts", "memory", "stack", "io", "symbols", "problems", "listing", "output", "trace", "trainer"):
             m.addAction(self.docks[key].toggleViewAction())
         m.addSeparator()
         self.theme_menu = m.addMenu("&Theme")
@@ -469,6 +585,17 @@ class MainWindow(QMainWindow):
         m.addAction(self.a_compact)
         m.addAction(self.a_goto_editor)
         m.addAction(self.a_layout)
+
+        m = mb.addMenu("&Lab")
+        self.lab_menu = m
+        self.a_trainer_show = m.addAction("Show the &Virtual 8085 Trainer Kit", self.show_trainer)
+        self.a_experiment1 = m.addAction("&Experiment 1: Read Switches and Control LEDs", self.start_experiment)
+        m.addSeparator()
+        for name, label in self.TRAINER_EXAMPLES:
+            m.addAction(label, lambda n=name: self._open_trainer_example(n))
+        m.addSeparator()
+        m.addAction("Trainer Kit &Port Mapping...", self.trainer_ports)
+        m.addAction("&Reset Trainer Hardware", self.trainer_reset)
 
         m = mb.addMenu("&Help")
         m.addAction(self.a_ref)
@@ -521,8 +648,9 @@ class MainWindow(QMainWindow):
         tb.addSeparator()
         lbl = QLabel(" Speed ")
         lbl.setObjectName("Dim")
-        adv(lbl)
+        self._compact_labels = [(adv(lbl), lbl, True)]  # (action, label, advanced only)
         self.speed = QComboBox()
+        self.speed.setAccessibleName("Speed")
         for label, rate in SPEEDS:
             self.speed.addItem(label, rate)
         self.speed.setCurrentIndex(self.prefs.get("speed"))
@@ -534,8 +662,9 @@ class MainWindow(QMainWindow):
             tb.addAction(a)
         lbl = QLabel(" Mode ")
         lbl.setObjectName("Dim")
-        tb.addWidget(lbl)
+        self._compact_labels.append((tb.addWidget(lbl), lbl, False))
         self.mode_combo = QComboBox()
+        self.mode_combo.setAccessibleName("Mode")
         self.mode_combo.addItem("Beginner", "beginner")
         self.mode_combo.addItem("Advanced", "advanced")
         self.mode_combo.setToolTip("Beginner shows only what you need to learn; Advanced shows every panel.")
@@ -563,7 +692,7 @@ class MainWindow(QMainWindow):
         apply_theme(QApplication.instance(), self.theme, font)
         t = self.theme
         self.editor.set_theme(t, self.prefs.syntax_overrides(t.dark))
-        for p in (self.memory, self.registers, self.stack, self.io, self.problems, self.listing):
+        for p in (self.memory, self.registers, self.stack, self.io, self.problems, self.listing, self.trainer):
             p.set_theme(t)
         self._refresh_icons()
         for a in self.theme_group.actions():
@@ -623,6 +752,7 @@ class MainWindow(QMainWindow):
             if d.widget() is not None:
                 scale_monospace(d.widget(), delta, geometry)
         self.pc_label.setFont(monospace_font(size=10 + delta))
+        self._schedule_fit_toolbars()  # bigger interface text makes the toolbars wider
 
     def preferences(self):
         dlg = PreferencesDialog(self.prefs, self.themes, self)
@@ -684,6 +814,8 @@ class MainWindow(QMainWindow):
 
     def _set_source(self, text: str, path: Path | None, title: str | None = None):
         self.timer.stop()
+        if not self._loading_lab:
+            self._end_lab()  # the student opened or started something else: the lab is over
         self.editor.setReadOnly(False)
         self.editor.setPlainText(text)
         self.editor.document().setModified(False)
@@ -698,6 +830,7 @@ class MainWindow(QMainWindow):
     def _drop_session(self):
         self.timer.stop()
         self.machine.unload(keep_memory=self.prefs.get("keep_memory"))
+        self.kit.reset_outputs()  # a new program starts with dark LEDs; the switches stay where they are
         self.stack.reset()
         self._before = None
         self.explain.show_hint()
@@ -943,6 +1076,7 @@ class MainWindow(QMainWindow):
             self.editor.set_exec_line(None)
             return False
         self.machine.load(res, keep_memory=self.prefs.get("keep_memory"))
+        self.kit.reset_outputs()  # assemble / restart / reload: LEDs and display blank, switches kept
         self.stack.reset()
         self._before = None
         self.explain.clear_last("<p><i>Nothing has run yet - the first instruction is highlighted in the editor.</i></p>")
@@ -955,6 +1089,8 @@ class MainWindow(QMainWindow):
         for w in res.warnings:
             self.output.add(f"warning line {w.line}: {w.message}")
         self._set_state("ready")
+        if self.trainer.guide.isVisible():
+            self.trainer.guide.program_loaded()
         self.refresh_all()
         return True
 
@@ -1043,6 +1179,11 @@ class MainWindow(QMainWindow):
         if temp_bp is not None:
             self._temp_bp = temp_bp
             self._sync_breakpoints()
+        if self.trainer.concealed:
+            # Experiment 1: running now would show A and the LEDs before the student has predicted
+            self.say("Experiment 1: lock in your prediction first (or press Help me), then step through the program.",
+                     "warn")
+            return
         self._mode = mode
         cpu = self.machine.cpu
         self._before = statediff.take(self.machine)
@@ -1135,13 +1276,169 @@ class MainWindow(QMainWindow):
     def _after_manual_edit(self):
         self.refresh_all()
 
+    # ============================================== Virtual 8085 Trainer Kit
+    TRAINER_EXAMPLES = [("E1_read_switches_control_leds.asm", "Lab program: Read switches, control LEDs (E1)"),
+                        ("E1b_seven_segment_raw.asm", "Lab program: Seven-segment raw bits"),
+                        ("E1c_seven_segment_hex.asm", "Lab program: Seven-segment hex decode")]
+
+    def _make_kit(self) -> TrainerKit:
+        p = self.prefs
+        ports = PortMap(p.get("trainer_switch_port"), p.get("trainer_led_port"), p.get("trainer_seg_port"))
+        try:
+            ports.validate()
+        except PeripheralConfigError:
+            ports = PortMap()  # a damaged setting: fall back to the documented defaults
+        kit = TrainerKit(self.machine.cpu, ports, enabled=p.get("trainer_enabled"))
+        try:
+            kit.display.set_mode(p.get("trainer_seg_mode"))
+        except PeripheralConfigError:
+            pass
+        return kit
+
+    def _trainer_changed(self):
+        """The user flipped a switch: the I/O Ports row of the switch port mirrors it."""
+        if self.io.isVisible():
+            self.io.refresh()
+        if self.state in ("ready", "paused", "halted"):
+            self.explain.refresh_next(self.machine.program is not None)  # "IN 00h will read ..." stays true
+
+    def _apply_conceal(self, on: bool):
+        """Experiment 1, before the student has predicted: show the kit's ports as ``??`` in the I/O Ports table,
+        the Output log, the Explain panel and the Trace table. Display only - ``cpu.io``, the switches and the
+        CPU are never touched, and everything is shown again as soon as the student predicts, asks for help or
+        ends the experiment."""
+        p = self.kit.ports
+        ports = {p.switches_in, p.leds_out, p.seven_segment_out} if on else ()
+        self.io.set_concealed(ports)
+        self.output.set_concealed(ports)
+        self.trace.set_concealed(on)
+        self.explain.concealed = on
+        if on:
+            self.explain.clear_last()
+        self.explain.refresh_next(self.explain._active)
+        self.refresh_all()
+
+    def _trainer_enabled(self, on: bool):
+        self.prefs.set("trainer_enabled", on)
+        self.say("Trainer kit connected: IN/OUT on its ports drive the switches, LEDs and display." if on else
+                 "Trainer kit disconnected: IN/OUT use only the I/O Ports table, exactly as before.")
+        self.refresh_all()
+
+    def _io_edited(self, top, bottom, _roles=None):
+        """An edit in the I/O Ports table on the switch port sets the switches (the switches own that port)."""
+        k = self.kit
+        if not k.enabled:
+            return
+        port = k.switches.port
+        if top.row() <= port <= bottom.row() and self.machine.cpu.io[port] != k.switches.value:
+            k.set_switches(self.machine.cpu.io[port])
+            self.trainer.refresh()
+
+    def show_trainer(self):
+        if self.a_focus.isChecked():
+            self.a_focus.setChecked(False)
+            self.toggle_focus_mode()
+        d = self.docks["trainer"]
+        d.show()
+        d.raise_()
+        QTimer.singleShot(0, self._size_trainer_dock)
+
+    def _size_trainer_dock(self):
+        """Ask for the panel's natural height when it is docked in a short tab group (never more than about
+        60 % of the window, so the editor and the other column keep their space; the panel scrolls)."""
+        d = self.docks["trainer"]
+        if d.isFloating() or not d.isVisible():
+            return
+        holder = d.widget()
+        need = holder.widget().sizeHint().height() + max(0, d.height() - holder.height())
+        want = min(need, round(self.height() * 0.6))
+        if d.height() < want:
+            self.resizeDocks([d], [want], Qt.Orientation.Vertical)
+
+    def trainer_ports(self):
+        dlg = PortMapDialog(self.kit.ports, self)
+        if not dlg.exec():
+            return
+        ports = dlg.ports()
+        try:
+            self.kit.set_ports(ports)
+        except PeripheralConfigError as e:  # the dialog validates first; keep a clear message anyway
+            QMessageBox.warning(self, APP_NAME, str(e))
+            return
+        self.prefs.set("trainer_switch_port", ports.switches_in)
+        self.prefs.set("trainer_led_port", ports.leds_out)
+        self.prefs.set("trainer_seg_port", ports.seven_segment_out)
+        self.trainer.sync_from_kit()
+        if self.trainer.concealed:
+            self._apply_conceal(True)  # the masked ports moved with the mapping
+        self.say(f"Trainer kit ports: switches IN {ports.switches_in:02X}H, LEDs OUT {ports.leds_out:02X}H, "
+                 f"seven-segment OUT {ports.seven_segment_out:02X}H", "ok")
+        self.refresh_all()
+
+    def trainer_reset(self):
+        self.kit.reset_hardware()
+        self.trainer.sync_from_kit()
+        self.say("Trainer kit reset: switches down, LEDs and display blank. The CPU was not touched.")
+        self.refresh_all()
+
+    def _open_trainer_example(self, name: str):
+        if self._maybe_save():
+            self._loading_lab = True
+            try:
+                self._load_example("trainer/" + name)
+            finally:
+                self._loading_lab = False
+            self._begin_lab()
+            self._apply_display_hint()
+
+    def _begin_lab(self):
+        """A lab is running: the kit must be visible, and stays visible in Beginner mode until the lab ends."""
+        self._lab_active = True
+        self.show_trainer()
+
+    def _end_lab(self):
+        if not self._lab_active:
+            return
+        self._lab_active = False
+        if self.trainer.guide.isVisible():
+            self.trainer.hide_guide()  # leaving the experiment shows everything again
+
+    def _apply_display_hint(self):
+        """A lab program may say ``; @display: hex`` (or raw): switch the display mode for it. Display only."""
+        mode = (self.live.metadata.get("display", "") if self.live else "").strip().lower()
+        if mode in ("raw", "hex") and mode != self.kit.display.mode:
+            self.kit.display.set_mode(mode)
+            self.prefs.set("trainer_seg_mode", mode)
+            self.trainer.sync_from_kit()
+            self.say(f"This lab uses the seven-segment display in {'Hex decode' if mode == 'hex' else 'Raw segment bits'} "
+                     "mode (Trainer Kit panel). Changing the mode never touches the CPU.", "ok")
+
+    def start_experiment(self):
+        """Lab > Experiment 1: show the kit with the guided flow (the program is loaded at its 'Assemble' step)."""
+        self._begin_lab()
+        self.trainer.show_guide()
+        self.trainer.refresh()
+        self.say("Experiment 1: follow the steps in the Trainer Kit panel.", "ok")
+
+    def start_experiment_program(self):
+        if not self._maybe_save():
+            return
+        self._loading_lab = True
+        try:
+            self._load_example("trainer/" + self.TRAINER_EXAMPLES[0][0])
+        finally:
+            self._loading_lab = False
+        if self._assemble_and_load():
+            self.say("Experiment 1 program assembled. Press Step Into (F11) to execute IN.", "ok")
+
     # ============================================================= refresh
     def _pull_out_log(self):
         m = self.machine
         new = m.out_count - self._out_seen
         if new > 0:
             for icount, port, value in m.out_log[-min(new, len(m.out_log)):][-200:]:
-                self.output.add(f"[{icount:>9,}]  OUT {port:02X}h <- {value:02X}h  ({value})")
+                self.output.add(f"[{icount:>9,}]  OUT {port:02X}h <- {value:02X}h  ({value})", port,
+                                f"[{icount:>9,}]  OUT {port:02X}h <- ??h  (hidden until you predict)")
                 self.io.note_out(port, icount)
             self._out_seen = m.out_count
         elif new < 0:
@@ -1165,7 +1462,7 @@ class MainWindow(QMainWindow):
         self.stack.update_base()  # keep the stack extent right even when the Stack panel is hidden
         self.registers.refresh(reset_marks=self.state in ("idle", "ready"))
         self.flags.refresh()
-        for w in (self.stack, self.io, self.symbols, self.interrupts, self.memory):
+        for w in (self.stack, self.io, self.symbols, self.interrupts, self.memory, self.trainer):
             if w.isVisible():
                 w.refresh()
         self._pull_out_log()
@@ -1210,8 +1507,10 @@ class MainWindow(QMainWindow):
                 if isinstance(state, QByteArray) and not state.isEmpty() and not first:
                     self.restoreState(state)
                     self._layout_restored = True
+                    self._place_docks_missing_from(state, "advanced")
                 elif not first:
                     self._default_layout()
+        self._schedule_fit_toolbars()
         if not first:
             self.say("Beginner mode: the essentials only. Switch to Advanced (toolbar or View menu) for every panel."
                      if beginner else "Advanced mode: all panels.")
@@ -1347,12 +1646,108 @@ class MainWindow(QMainWindow):
         state = q.value("window/state")
         if isinstance(geo, QByteArray) and not geo.isEmpty():
             self.restoreGeometry(geo)
+            self._fit_to_screen()  # saved on a bigger screen (or a projector): keep it on this one
         else:
             screen = self.screen().availableGeometry()
             self.resize(min(1500, screen.width() - 40), min(900, screen.height() - 60))
         if isinstance(state, QByteArray) and not state.isEmpty():
             self.restoreState(state)
             self._layout_restored = True
+            self._place_docks_missing_from(state, self.prefs.get("mode"))
+            if self.prefs.get("mode") == "beginner":
+                self._enforce_beginner_docks()
+
+    def _place_docks_missing_from(self, state: QByteArray, mode: str):
+        """A layout saved before a dock existed (e.g. by 8085 Studio 1.1.0, before the Trainer Kit) does not
+        mention it, and Qt then leaves it wherever the default layout put it. Give it the default place of the
+        mode instead: hidden in Beginner mode, a tab next to I/O Ports in Advanced mode."""
+        raw = bytes(state.data())
+        d = self.docks["trainer"]
+        if "trainer".encode("utf-16-be") in raw:
+            return
+        if mode == "beginner":
+            d.hide()
+            return
+        # isHidden, not isVisible: at start-up the window itself is not shown yet
+        mate = next((self.docks[k] for k in ("symbols", "io", "stack", "memory") if not self.docks[k].isHidden()), None)
+        if mate is None:
+            d.hide()  # the user had closed that whole column; do not add one
+            return
+        d.show()
+        self.tabifyDockWidget(mate, d)
+        mate.raise_()
+
+    def _fit_to_screen(self):
+        """Shrink/move the (non-maximised) window so it lies inside the available screen area."""
+        if self.isMaximized() or self.isFullScreen() or self.screen() is None:
+            return
+        avail = self.screen().availableGeometry()
+        frame = self.frameGeometry()
+        extra_w, extra_h = frame.width() - self.width(), frame.height() - self.height()
+        w = min(self.width(), avail.width() - extra_w)
+        h = min(self.height(), avail.height() - extra_h)
+        if (w, h) != (self.width(), self.height()):
+            self.resize(max(w, self.minimumSizeHint().width()), max(h, self.minimumSizeHint().height()))
+        frame = self.frameGeometry()
+        x = min(max(frame.x(), avail.left()), max(avail.left(), avail.right() - frame.width() + 1))
+        y = min(max(frame.y(), avail.top()), max(avail.top(), avail.bottom() - frame.height() + 1))
+        if (x, y) != (frame.x(), frame.y()):
+            self.move(x, y)
+
+    # ------------------------------------------------------------ toolbar fit
+    def _toolbars_in_row(self) -> list[QToolBar]:
+        return [tb for tb in (self.tb_file, self.tb_run, self.tb_extra)
+                if not tb.isHidden() and self.toolBarArea(tb) == Qt.ToolBarArea.TopToolBarArea]
+
+    def _fit_toolbars(self):
+        """Move the Tools toolbar to a second row when the three toolbars do not fit in one.
+
+        Qt hides whatever does not fit behind the toolbar's overflow chevron. In Beginner mode the
+        Run toolbar shows text beside its icons and is wide, so on a narrow window (or at a high
+        display scale) the "Store code at" box - which must be visible in both modes - ended up
+        behind the chevron. A second row gives the Tools toolbar the full window width; "Store code
+        at" is its first item, so it stays visible. One row is used again when everything fits.
+        """
+        if not hasattr(self, "tb_extra"):  # called while the window is still being built
+            return
+        if self.tb_extra.isHidden() or self.toolBarArea(self.tb_extra) != Qt.ToolBarArea.TopToolBarArea:
+            return
+        # widths as if the "Speed" / "Mode" captions were shown (they may be hidden by compact mode)
+        beginner = getattr(self, "mode", "beginner") == "beginner"
+        labels = [(act, lbl) for act, lbl, adv_only in self._compact_labels if not (adv_only and beginner)]
+        hidden = sum(lbl.sizeHint().width() for act, lbl in labels if not act.isVisible())
+        need = sum(tb.sizeHint().width() for tb in self._toolbars_in_row()) + hidden
+        wrap = need > self.width()
+        if wrap != self.toolBarBreak(self.tb_extra):
+            if wrap:
+                self.insertToolBarBreak(self.tb_extra)
+            else:
+                self.removeToolBarBreak(self.tb_extra)
+        # Very narrow (or a high display scale with wide fonts): even a row of its own is too short for
+        # the Tools toolbar, and the Mode box would go behind the chevron. Drop the two captions then;
+        # the boxes keep their tooltips and accessible names.
+        full = self.tb_extra.sizeHint().width() + hidden
+        compact = wrap and full > self.width()
+        for act, lbl in labels:
+            if act.isVisible() == compact:
+                act.setVisible(not compact)
+        # Never narrower than the compact Tools row, so its last item (the Mode box) cannot be pushed
+        # behind the chevron. This is far below 800 px; the docks scroll instead.
+        narrowest = full - sum(lbl.sizeHint().width() for act, lbl in labels)
+        if self.minimumWidth() != narrowest:
+            self.setMinimumWidth(narrowest)
+
+    def _schedule_fit_toolbars(self):
+        self._fit_toolbars()
+        QTimer.singleShot(0, self._fit_toolbars)  # again once the toolbars have re-laid out
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._fit_toolbars()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        self._schedule_fit_toolbars()
 
     def closeEvent(self, e):
         if not self._maybe_save():

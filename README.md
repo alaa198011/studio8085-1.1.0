@@ -31,6 +31,7 @@ step through your program.
 | **Memory heatmap and cell detail** | Blue = read, orange = written, green = executed; zoom to one byte per square; click a byte for its type, source line and access counts. |
 | **GNUSim8085 compatibility checks** | Optional notes or errors where a program uses syntax the original tool rejects ([details](docs/COMPATIBILITY.md)). |
 | **8085 model** | All 246 documented opcodes, flags per the manual's definitions, instruction-level T-state accounting, **RST, EI/DI, TRAP, RST 7.5/6.5/5.5, INTR, SIM, RIM**. Scope and limits: [ACCURACY.md](docs/ACCURACY.md). |
+| **Virtual 8085 Trainer Kit** | 8 switches (`IN 00H`), 8 LEDs (`OUT 01H`) and a seven-segment digit (`OUT 02H`) in a dock, with a guided *Experiment 1: Read Switches and Control LEDs* (*Lab* menu). Virtual teaching ports, remappable ([details](docs/TRAINER_KIT.md)). |
 | **Themes and accessibility** | Dark, Light, High Contrast; visible focus outlines; interface and editor font scaling; custom JSON themes. |
 
 ## More screenshots
@@ -81,6 +82,7 @@ runs the test-suite and a packaged-app self-test (`8085Studio --selftest`).
 | [GNUSim8085 compatibility](docs/COMPATIBILITY.md) | syntax and behaviour differences, found by testing the real tool |
 | [Instruction matrix](docs/INSTRUCTION_MATRIX.md) | all 246 opcodes: bytes, T-states, flags, tests, references |
 | [Examples](docs/EXAMPLES.md) | the 27 bundled programs: what each teaches and its expected result |
+| [Virtual 8085 Trainer Kit](docs/TRAINER_KIT.md) | switches, LEDs and seven-segment display: ports, bit order, segment map, Experiment 1 |
 | [Release notes](docs/RELEASE_NOTES.md) | what changed |
 
 ## Using it

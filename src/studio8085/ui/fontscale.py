@@ -22,8 +22,15 @@ ITEM_BASE_ROLE = Qt.ItemDataRole.UserRole + 77
 REFERENCE_PT = 10  # the size the panels were designed for
 
 
+_MONO_HINTS = (QFont.StyleHint.Monospace, QFont.StyleHint.TypeWriter)
+
+
 def _monospace(font: QFont) -> bool:
-    return QFontInfo(font).fixedPitch()
+    # ``monospace_font()`` tags every panel font with the Monospace style hint. Check that request
+    # first: ``QFontInfo.fixedPitch()`` describes whatever font Qt *resolved*, which depends on the
+    # fonts installed (with an empty font database - e.g. the offscreen platform on Windows - nothing
+    # resolves as fixed pitch and the panels silently stopped scaling).
+    return font.styleHint() in _MONO_HINTS or QFontInfo(font).fixedPitch()
 
 
 def _scaled(font: QFont, base: int, delta: int) -> QFont:

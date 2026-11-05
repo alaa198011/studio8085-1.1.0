@@ -660,9 +660,12 @@ class StepRecorder:
                                mem_accesses, port_events)
         roles: dict[str, str] = {}
         for fl in flows:
+            if fl.phase == 0:  # the fetch is shown as an animation step; it does not mark PC/memory as "used"
+                continue
             roles[fl.src] = "both" if roles.get(fl.src) in ("dst", "both") else "src"
             roles[fl.dst] = "both" if roles.get(fl.dst) in ("src", "both") else "dst"
-        roles["IR"] = roles.get("IR", "dst") if kind == "instr" and detailed else roles.get("IR", "")
+        if kind == "instr" and detailed:
+            roles["IR"] = "both" if roles.get("IR") == "src" else "dst"
         roles = {k: v for k, v in roles.items() if v}
 
         why, flag_why, summary, details = self._explain(p, dec, kind, pre, post, taken, n)

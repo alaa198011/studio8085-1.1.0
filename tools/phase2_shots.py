@@ -157,11 +157,6 @@ p.zoom_by(0.0)
 w.cpu_dock.resize(1000, 760)
 settle(10)
 
-# ---- a real screen capture of the desktop with everything on it
-screen = w.screen()
-settle(10)
-screen.grabWindow(0).save(str(out / f"{prefix}desktop_real_screen.png"))
-saved.append(f"{prefix}desktop_real_screen.png")
 w.editor.document().setModified(False)
 w.close()
 print(len(saved), "screenshots:", *saved, sep="\n  ")

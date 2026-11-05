@@ -543,7 +543,12 @@ def test_a_layout_saved_by_1_1_0_is_restored(app, mode):
         _settle(app)
         assert w._layout_restored and w.mode == mode
         shown = sorted(k for k, d in w.docks.items() if d.isVisible() and k != "trainer")
-        assert shown == saved["restored_by_baseline"]  # exactly what 1.1.0 itself shows for that state
+        if mode == "beginner":
+            # 1.1.0 brought back all 13 panels for a Beginner session (the restore bug fixed in Phase 1,
+            # recorded in restored_by_baseline); now the restore shows exactly the Beginner set.
+            assert shown == saved["visible"] and shown != saved["restored_by_baseline"]
+        else:
+            assert shown == saved["restored_by_baseline"]  # exactly what 1.1.0 itself shows for that state
         d = w.docks["trainer"]
         assert not d.isFloating()
         if mode == "beginner":

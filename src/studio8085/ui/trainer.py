@@ -325,6 +325,7 @@ class ExperimentGuide(QGroupBox):
 
     load_requested = Signal()  # "load and assemble the program"
     conceal_changed = Signal(bool)  # hide the switch value readout until a prediction exists
+    ended = Signal()  # "End experiment": close the guide and unmask everything
 
     STEPS = ["Set the switches", "Predict the LEDs", "Assemble", "Step through", "A after IN",
              "LEDs after OUT", "Compare", "Explain"]
@@ -368,6 +369,9 @@ class ExperimentGuide(QGroupBox):
         self.load_btn.clicked.connect(self.load_requested.emit)
         self.restart_btn = QPushButton("Start over")
         self.restart_btn.clicked.connect(self.start_over)
+        self.end_btn = QPushButton("End experiment")
+        self.end_btn.setToolTip("Close the guide and show everything again (the answer is no longer hidden)")
+        self.end_btn.clicked.connect(self.ended.emit)
         row1 = QHBoxLayout()
         row1.addWidget(self.predict_edit, 1)
         row1.addWidget(self.lock_btn)
@@ -376,6 +380,7 @@ class ExperimentGuide(QGroupBox):
             row2.addWidget(b)
         row2.addStretch(1)
         row2.addWidget(self.restart_btn)
+        row2.addWidget(self.end_btn)
         lay = QVBoxLayout(self)
         lay.addWidget(self.objectives)
         lay.addWidget(self.step_label)
@@ -535,6 +540,7 @@ class TrainerPanel(QWidget):
     """The dock contents. ``changed`` is emitted when the user changes the hardware (switches, mode, ...)."""
 
     changed = Signal()
+    concealed_changed = Signal(bool)  # Experiment 1 is hiding the answer (display only)
     enabled_changed = Signal(bool)
     mode_changed = Signal(str)
     ports_requested = Signal()
@@ -631,6 +637,7 @@ class TrainerPanel(QWidget):
         self.guide = ExperimentGuide()
         self.guide.set_context(kit, None)
         self.guide.conceal_changed.connect(self.set_conceal)
+        self.guide.ended.connect(self.hide_guide)
         self.guide.hide()
 
         lay = QVBoxLayout(self)
@@ -680,6 +687,11 @@ class TrainerPanel(QWidget):
         self._conceal = on
         self._shown = None
         self.refresh()
+        self.concealed_changed.emit(on)
+
+    @property
+    def concealed(self) -> bool:
+        return self._conceal
 
     def show_guide(self):
         self.guide.show()
@@ -765,11 +777,22 @@ class TrainerPanel(QWidget):
             else:
                 self.sw_value.setText(f"= {bits(sw)}b = {sw:02X}h" + ("" if k.enabled else "  (not connected)"))
             lv = k.leds.value
+            hide = self._conceal  # presentation only: the latches themselves are untouched
             for lamp in self.leds:
-                if lamp.on != k.leds.lit(lamp.bit):
-                    lamp.set_on(k.leds.lit(lamp.bit))
-            self.led_value.setText(f"= {bits(lv)}b = {lv:02X}h" + ("" if k.leds.written else "  (no OUT yet)"))
+                want = False if hide else k.leds.lit(lamp.bit)
+                if lamp.on != want:
+                    lamp.set_on(want)
+            if hide:
+                self.led_value.setText("= ???? ????b  (hidden until you predict)")
+            else:
+                self.led_value.setText(f"= {bits(lv)}b = {lv:02X}h" + ("" if k.leds.written else "  (no OUT yet)"))
             self.led_value.setAccessibleDescription(self.led_value.text())
+            if hide:
+                self.seg_value.setText("latch ??h\n(hidden until you predict)")
+                self.digit.set_segments(set(), "Display hidden until you predict")
+                if self.guide.isVisible():
+                    self.guide.observe()
+                return
             lit = d.segments()
             names = " ".join(s if s != "p" else "DP" for s in "abcdefgp" if s in lit) or "none"
             glyph = d.glyph()

@@ -162,6 +162,8 @@ class MainWindow(QMainWindow):
         self._base_font = QApplication.font()
         self._hidden_for_focus: list[str] | None = None
         self.mode = "beginner"
+        self._lab_active = False  # a Lab menu program or Experiment 1 is in use: Beginner mode keeps the kit visible
+        self._loading_lab = False
 
         self.setWindowTitle(APP_NAME)
         self.setWindowIcon(app_icon())
@@ -216,7 +218,9 @@ class MainWindow(QMainWindow):
         self.trainer.mode_changed.connect(lambda m: self.prefs.set("trainer_seg_mode", m))
         self.trainer.ports_requested.connect(self.trainer_ports)
         self.trainer.reset_requested.connect(self.trainer_reset)
+        self.trainer.guide.ended.connect(self._end_lab)
         self.trainer.guide.load_requested.connect(self.start_experiment_program)
+        self.trainer.concealed_changed.connect(self._apply_conceal)
         self.io.model.dataChanged.connect(self._io_edited)
         for p in (self.registers, self.flags, self.stack, self.io, self.memory, self.symbols, self.interrupts,
                   self.explain):
@@ -316,6 +320,16 @@ class MainWindow(QMainWindow):
         D["problems"].raise_()
         QTimer.singleShot(0, self._apply_default_sizes)
 
+    BEGINNER_DOCKS = ("registers", "flags", "explain", "instructions", "memory", "problems", "output")
+
+    def _enforce_beginner_docks(self):
+        """Beginner mode shows exactly the Beginner panels (plus the Trainer Kit while a lab is active), whatever
+        layout was restored. Qt's ``restoreState`` does not hide the docks that the default layout had shown, so
+        a session saved in Beginner mode used to come back with every panel."""
+        keep = set(self.BEGINNER_DOCKS) | ({"trainer"} if self._lab_active else set())
+        for k, d in self.docks.items():
+            d.setVisible(k in keep)
+
     def _beginner_layout(self):
         """Beginner mode: editor, registers, flags, memory, explanation, problems and output."""
         L, R, B = (Qt.DockWidgetArea.LeftDockWidgetArea, Qt.DockWidgetArea.RightDockWidgetArea,
@@ -335,12 +349,14 @@ class MainWindow(QMainWindow):
         self.addDockWidget(B, D["problems"])
         self.addDockWidget(B, D["output"])
         self.tabifyDockWidget(D["problems"], D["output"])
-        keep = {"registers", "flags", "explain", "instructions", "memory", "problems", "output"}
+        keep = set(self.BEGINNER_DOCKS) | ({"trainer"} if self._lab_active else set())
         for k, d in D.items():
             d.setVisible(k in keep)
-        D["explain"].raise_()
+        (D["trainer"] if self._lab_active else D["explain"]).raise_()
         D["problems"].raise_()
         QTimer.singleShot(0, self._apply_beginner_sizes)
+        if self._lab_active:
+            QTimer.singleShot(0, self._size_trainer_dock)
 
     def _side_scale(self, widths: list[int]) -> float:
         """<= 1: shrink the side columns on a narrow window so the editor keeps about 35 % of the width."""
@@ -798,6 +814,8 @@ class MainWindow(QMainWindow):
 
     def _set_source(self, text: str, path: Path | None, title: str | None = None):
         self.timer.stop()
+        if not self._loading_lab:
+            self._end_lab()  # the student opened or started something else: the lab is over
         self.editor.setReadOnly(False)
         self.editor.setPlainText(text)
         self.editor.document().setModified(False)
@@ -1161,6 +1179,11 @@ class MainWindow(QMainWindow):
         if temp_bp is not None:
             self._temp_bp = temp_bp
             self._sync_breakpoints()
+        if self.trainer.concealed:
+            # Experiment 1: running now would show A and the LEDs before the student has predicted
+            self.say("Experiment 1: lock in your prediction first (or press Help me), then step through the program.",
+                     "warn")
+            return
         self._mode = mode
         cpu = self.machine.cpu
         self._before = statediff.take(self.machine)
@@ -1279,6 +1302,22 @@ class MainWindow(QMainWindow):
         if self.state in ("ready", "paused", "halted"):
             self.explain.refresh_next(self.machine.program is not None)  # "IN 00h will read ..." stays true
 
+    def _apply_conceal(self, on: bool):
+        """Experiment 1, before the student has predicted: show the kit's ports as ``??`` in the I/O Ports table,
+        the Output log, the Explain panel and the Trace table. Display only - ``cpu.io``, the switches and the
+        CPU are never touched, and everything is shown again as soon as the student predicts, asks for help or
+        ends the experiment."""
+        p = self.kit.ports
+        ports = {p.switches_in, p.leds_out, p.seven_segment_out} if on else ()
+        self.io.set_concealed(ports)
+        self.output.set_concealed(ports)
+        self.trace.set_concealed(on)
+        self.explain.concealed = on
+        if on:
+            self.explain.clear_last()
+        self.explain.refresh_next(self.explain._active)
+        self.refresh_all()
+
     def _trainer_enabled(self, on: bool):
         self.prefs.set("trainer_enabled", on)
         self.say("Trainer kit connected: IN/OUT on its ports drive the switches, LEDs and display." if on else
@@ -1330,6 +1369,8 @@ class MainWindow(QMainWindow):
         self.prefs.set("trainer_led_port", ports.leds_out)
         self.prefs.set("trainer_seg_port", ports.seven_segment_out)
         self.trainer.sync_from_kit()
+        if self.trainer.concealed:
+            self._apply_conceal(True)  # the masked ports moved with the mapping
         self.say(f"Trainer kit ports: switches IN {ports.switches_in:02X}H, LEDs OUT {ports.leds_out:02X}H, "
                  f"seven-segment OUT {ports.seven_segment_out:02X}H", "ok")
         self.refresh_all()
@@ -1342,9 +1383,25 @@ class MainWindow(QMainWindow):
 
     def _open_trainer_example(self, name: str):
         if self._maybe_save():
-            self._load_example("trainer/" + name)
-            self.show_trainer()
+            self._loading_lab = True
+            try:
+                self._load_example("trainer/" + name)
+            finally:
+                self._loading_lab = False
+            self._begin_lab()
             self._apply_display_hint()
+
+    def _begin_lab(self):
+        """A lab is running: the kit must be visible, and stays visible in Beginner mode until the lab ends."""
+        self._lab_active = True
+        self.show_trainer()
+
+    def _end_lab(self):
+        if not self._lab_active:
+            return
+        self._lab_active = False
+        if self.trainer.guide.isVisible():
+            self.trainer.hide_guide()  # leaving the experiment shows everything again
 
     def _apply_display_hint(self):
         """A lab program may say ``; @display: hex`` (or raw): switch the display mode for it. Display only."""
@@ -1358,7 +1415,7 @@ class MainWindow(QMainWindow):
 
     def start_experiment(self):
         """Lab > Experiment 1: show the kit with the guided flow (the program is loaded at its 'Assemble' step)."""
-        self.show_trainer()
+        self._begin_lab()
         self.trainer.show_guide()
         self.trainer.refresh()
         self.say("Experiment 1: follow the steps in the Trainer Kit panel.", "ok")
@@ -1366,7 +1423,11 @@ class MainWindow(QMainWindow):
     def start_experiment_program(self):
         if not self._maybe_save():
             return
-        self._load_example("trainer/" + self.TRAINER_EXAMPLES[0][0])
+        self._loading_lab = True
+        try:
+            self._load_example("trainer/" + self.TRAINER_EXAMPLES[0][0])
+        finally:
+            self._loading_lab = False
         if self._assemble_and_load():
             self.say("Experiment 1 program assembled. Press Step Into (F11) to execute IN.", "ok")
 
@@ -1376,7 +1437,8 @@ class MainWindow(QMainWindow):
         new = m.out_count - self._out_seen
         if new > 0:
             for icount, port, value in m.out_log[-min(new, len(m.out_log)):][-200:]:
-                self.output.add(f"[{icount:>9,}]  OUT {port:02X}h <- {value:02X}h  ({value})")
+                self.output.add(f"[{icount:>9,}]  OUT {port:02X}h <- {value:02X}h  ({value})", port,
+                                f"[{icount:>9,}]  OUT {port:02X}h <- ??h  (hidden until you predict)")
                 self.io.note_out(port, icount)
             self._out_seen = m.out_count
         elif new < 0:
@@ -1592,6 +1654,8 @@ class MainWindow(QMainWindow):
             self.restoreState(state)
             self._layout_restored = True
             self._place_docks_missing_from(state, self.prefs.get("mode"))
+            if self.prefs.get("mode") == "beginner":
+                self._enforce_beginner_docks()
 
     def _place_docks_missing_from(self, state: QByteArray, mode: str):
         """A layout saved before a dock existed (e.g. by 8085 Studio 1.1.0, before the Trainer Kit) does not

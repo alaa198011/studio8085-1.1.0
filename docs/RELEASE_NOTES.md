@@ -13,6 +13,14 @@
 - **Experiment 1: Read Switches and Control LEDs** (*Lab* menu): a guided set - predict - assemble - step - compare flow. The answer is
   not shown before the student predicts (unless they press *Help me*); the comparison reads the real accumulator and LED latch.
   Lab programs for the experiment, a raw-segment pattern and a hex-decode display (`examples/trainer/`).
+- **Experiment 1 keeps the answer hidden until the student predicts.** Before a prediction (or *Help me*), the switch value and the
+  expected LED/output result are shown as `??` in the Trainer panel (readouts, LED lamps, display), the I/O Ports rows of the configured
+  switch, LED and display ports, the Output log's `OUT` lines, the Explain panel's `IN`/`OUT` details and the Trace table. This is display
+  only: `cpu.io`, the switches and the CPU are untouched. Run and Step wait for the prediction. Predicting, *Help me*, *End experiment*
+  (new button) or opening another program shows everything again.
+- **Beginner mode keeps the kit visible during a lab.** Starting Experiment 1 or a Lab program shows the kit (tabbed next to Explain) and
+  keeps it through mode switches and *Reset layout* until the lab ends; it still starts hidden when no lab is running, and stays reachable
+  from the View menu. It fits and leaves the editor usable at 800x600, 1024x600, 1280x720 and 1366x768.
 - `docs/TRAINER_KIT.md`: ports, bit order, segment map, polarity, hex table, resets, limitations, how to run the lab.
 - `--selftest` also checks the trainer kit (switches -> `IN` -> A -> `OUT` -> LEDs, and that disconnecting restores the CPU hooks).
 
@@ -22,6 +30,11 @@
 - While connected, the switches own their port: `IN 00H` reads them and the I/O Ports row 00h mirrors them (typing there sets them).
 - Beginner mode does not show the kit until it is opened from the Lab or View menu, so the Beginner layout is unchanged. Layouts saved
   by 1.1.0 are restored as before.
+
+### Fixed
+- **A session saved in Beginner mode restored all 13 panels** instead of the Beginner set (a bug present since 1.1.0: Qt's `restoreState`
+  does not hide the docks the default layout had shown, and nothing enforced the Beginner set afterwards). Beginner now always comes back
+  as the Beginner set; Advanced restores its own saved layout; layouts saved by 1.1.0 restore sensibly.
 
 ## 1.1.0 - learning-focused release
 

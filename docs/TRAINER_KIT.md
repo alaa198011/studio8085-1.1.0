@@ -118,8 +118,8 @@ START: IN 00H
 
 1. **Set the switches** to any pattern.
 2. **Predict the LEDs**: type the pattern you expect, as 8 binary digits (`10100101`) or hex (`A5h`), and
-   lock it in. Until you do, the switch value readout is hidden and the guide does not show the answer.
-   *Help me* reveals the answer and the reason, if you ask for it.
+   lock it in. Until you do, the answer is hidden everywhere (see below), and Run and Step wait for your
+   prediction. *Help me* reveals the answer and the reason, if you ask for it.
 3. **Assemble**: *Load and assemble the program* (or F7).
 4. **Step through** with Step Into (F11).
 5. **Observe A after IN**: the guide reads the accumulator from the CPU.
@@ -129,6 +129,22 @@ START: IN 00H
 
 Nothing is graded and nothing is hard-coded: if the program is changed (for example to read another port),
 the comparison follows what the CPU really did.
+
+**What is hidden before you predict** (shown as `??`, using the *configured* ports, not fixed 00H/01H/02H):
+
+* the Trainer panel: the switch value readout, the LED value readout and lamps, the display latch and segments;
+* the I/O Ports table: the value, decimal and binary cells and the tooltip of the switch, LED and display
+  port rows (the port number stays);
+* the Output log: the value of each `OUT` line to those ports (earlier runs included);
+* the Explain panel: the port value of `IN` and the `A = ...` of `OUT`, and the previous step's before/after table;
+* the Trace table (it records A and the I/O effects).
+
+This is **display only**: `cpu.io`, the switches, the CPU and the peripherals are never changed, and the
+real values are what a program reads and writes (tested). Everything is shown again as soon as you lock in a
+prediction, press *Help me*, press *End experiment*, or open or start another program. The positions of the
+switch knobs themselves are your own input, so they stay visible. The Registers panel is not masked; Run and
+Step are refused until you predict, so A cannot be read early (a value left in A by an earlier run is not
+cleared).
 
 Two more lab programs are in **Lab**:
 
@@ -140,8 +156,12 @@ Two more lab programs are in **Lab**:
 ## Where the panel appears
 
 * **Advanced mode**: a tab next to Stack / I/O Ports / Symbols (Stack stays in front).
-* **Beginner mode**: hidden by default, so the beginner layout stays as small as before; the Lab menu and
-  the View menu bring it back as a tab next to Explain / Instructions.
+* **Beginner mode**: hidden by default when no lab is running, so the beginner layout stays as small as
+  before; the Lab menu and the View menu bring it back as a tab next to Explain / Instructions. Starting
+  **Experiment 1** or a **Lab program** shows it and keeps it visible for the whole lab: through switches
+  between Beginner and Advanced mode and *Reset layout*. The lab ends with *End experiment* or when you open
+  or start another program; the next Beginner layout then hides the kit again. A new session never starts in
+  a lab, so a session restored in Beginner mode shows exactly the Beginner panels.
 * The panel scrolls inside its dock instead of making the window bigger, so the window still fits small
   screens (tested at 800x600 to 1920x1080, and at 150 % and 200 % scaling).
 * Saved layouts are respected. A layout saved by 8085 Studio 1.1.0 (before the kit existed) restores every
@@ -159,8 +179,9 @@ while a program runs is allowed, as on a real kit: the next `IN` reads the new p
 * One seven-segment digit only; no multiplexed displays, keypad, 8255 PPI, timers or interrupts from the
   kit (out of scope for this phase).
 * No timing or electrical model (no switch bounce, no LED persistence or brightness, no propagation delay).
-* The I/O Ports table can still show (and change) the switch port; in Advanced mode a student can read the
-  switch value there during Experiment 1.
+* Outside Experiment 1 the I/O Ports table shows (and can change) the switch port; inside it the value is
+  hidden until the prediction (above). A student can still read the switch knobs, the Registers panel's
+  stale contents, or the source program - the masking is a teaching aid, not a security boundary.
 
 ## Architecture (for developers)
 

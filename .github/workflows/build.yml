@@ -16,6 +16,8 @@ jobs:
       QT_QPA_PLATFORM: offscreen
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history so test_cpu_core_files_are_untouched_by_phase2 can diff against bd82989
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"

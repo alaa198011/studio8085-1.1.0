@@ -334,3 +334,40 @@ def test_recorder_never_raises_into_the_debugger():
     m.out_log = None  # break an assumption on purpose
     m.out_count = 5
     assert rec.end() is None and rec.last_error
+
+
+@pytest.mark.parametrize("org", [0x0000, 0x0016, 0x00FE, 0x1234])
+def test_call_summary_return_address_matches_the_pushed_address(org):
+    """Regression: the CALL summary used pc+2; CALL is 3 bytes, so the stated return address was wrong."""
+    from studio8085.core.explain import explain_next
+    m = Machine()
+    m.cpu.pc = org
+    for i, b in enumerate((0xCD, 0x00, 0x40)):  # CALL 4000h
+        m.cpu.mem.data[org + i] = b
+    e = explain_next(m.cpu)
+    m.cpu.step()
+    sp = m.cpu.sp
+    pushed = m.cpu.mem.data[sp] | m.cpu.mem.data[sp + 1] << 8
+    assert pushed == org + 3
+    assert f"return address ({pushed:04x}h)" in e.summary.lower()
+
+
+@pytest.mark.parametrize("op", [0xC4, 0xCC, 0xD4, 0xDC, 0xE4, 0xEC, 0xF4, 0xFC])
+def test_conditional_calls_push_pc_plus_3_and_rst_pushes_pc_plus_1(op):
+    m = Machine()
+    m.cpu.pc = 0x0100
+    for i, b in enumerate((op, 0x00, 0x40)):
+        m.cpu.mem.data[0x0100 + i] = b
+    # force the condition true for each opcode
+    c = m.cpu
+    c.z, c.cy, c.p, c.s = (1 if op == 0xCC else 0, 1 if op == 0xDC else 0, 1 if op == 0xEC else 0, 1 if op == 0xFC else 0)
+    c.step()
+    if c.pc == 0x4000:
+        sp = c.sp
+        assert (c.mem.data[sp] | c.mem.data[sp + 1] << 8) == 0x0103
+    m2 = Machine()
+    m2.cpu.pc = 0x0200
+    m2.cpu.mem.data[0x0200] = 0xDF  # RST 3
+    m2.cpu.step()
+    sp = m2.cpu.sp
+    assert m2.cpu.pc == 0x18 and (m2.cpu.mem.data[sp] | m2.cpu.mem.data[sp + 1] << 8) == 0x0201

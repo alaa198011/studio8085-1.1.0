@@ -82,6 +82,16 @@ QSplitter::handle:vertical { height: 1px; }
 QGroupBox { border: 1px solid @border@; border-radius: 7px; margin-top: 12px; padding: 10px 8px 6px 8px; }
 QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; color: @text_dim@; }
 QCheckBox, QRadioButton { spacing: 7px; }
+/* Check / radio boxes: the ordinary @border@ is nearly invisible on the Light panel (1.4:1); the indicator uses
+   @control_border@ (>= 3:1 non-text contrast on every panel colour) and fills with the accent when checked. */
+QCheckBox::indicator, QRadioButton::indicator { width: 14px; height: 14px; background: @base@; border: 2px solid @control_border@; }
+QCheckBox::indicator { border-radius: 3px; }
+QRadioButton::indicator { border-radius: 9px; }
+QCheckBox::indicator:hover, QRadioButton::indicator:hover { border-color: @accent@; }
+QCheckBox::indicator:checked { background: @accent@; border-color: @control_border@; }
+QCheckBox::indicator:indeterminate { background: @text_dim@; border-color: @control_border@; }
+QRadioButton::indicator:checked { background: qradialgradient(cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5, stop:0 @accent@, stop:0.55 @accent@, stop:0.6 @base@, stop:1 @base@); }
+QCheckBox::indicator:disabled, QRadioButton::indicator:disabled { border-color: @text_dim@; }
 QLabel#Dim { color: @text_dim@; }
 QLabel#Pill { background: @alt_base@; border: 1px solid @border@; border-radius: 9px; padding: 2px 9px; }
 QLabel#PillOn { background: @accent@; color: @accent_text@; border: 1px solid @accent@; border-radius: 9px; padding: 2px 9px; }

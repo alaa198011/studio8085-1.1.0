@@ -138,6 +138,17 @@ class DockScroll(QScrollArea):
 
 
 class MainWindow(QMainWindow):
+    # Responsive workspace (logical pixels, i.e. already divided by the display scale).
+    # EDITOR_MIN_WIDTH: about 60 source columns (a label, mnemonic, two operands and the start of a comment) of a
+    # 10 pt monospace font (~7 px) plus the line-number gutter and margins. The central widget can never be
+    # narrower, so a dock column is squeezed (its panel scrolls) before the editor is.
+    EDITOR_MIN_WIDTH = 440
+    # Two dock columns need about 270 px each to be usable. Below EDITOR_MIN_WIDTH + 2 * SIDE_COLUMN_MIN the docks
+    # of both sides are gathered into ONE tabbed column; they separate again at COMPACT_BELOW + COMPACT_HYSTERESIS.
+    SIDE_COLUMN_MIN = 270
+    COMPACT_BELOW = EDITOR_MIN_WIDTH + 2 * SIDE_COLUMN_MIN  # 980
+    COMPACT_HYSTERESIS = 60
+
     def __init__(self, prefs: Prefs | None = None):
         super().__init__()
         self.prefs = prefs or Prefs()
@@ -164,6 +175,10 @@ class MainWindow(QMainWindow):
         self.mode = "beginner"
         self._lab_active = False  # a Lab menu program or Experiment 1 is in use: Beginner mode keeps the kit visible
         self._loading_lab = False
+        self._compact: dict | None = None  # {"state", "vis", "sig"} while the docks are auto-tabified
+        self._user_narrow = False  # the user rearranged the docks at a narrow size: do not regroup them
+        self._adapting = False
+        self._adapt_pending = False
 
         self.setWindowTitle(APP_NAME)
         self.setWindowIcon(app_icon())
@@ -253,6 +268,7 @@ class MainWindow(QMainWindow):
         lay.setSpacing(0)
         lay.addWidget(self.editor, 1)
         lay.addWidget(self.findbar)
+        w.setMinimumWidth(self.EDITOR_MIN_WIDTH)  # the editor is never squeezed below ~60 columns
         self.setCentralWidget(w)
 
     def _build_docks(self):
@@ -273,7 +289,9 @@ class MainWindow(QMainWindow):
                           | QDockWidget.DockWidgetFeature.DockWidgetClosable)
             self.docks[key] = d
             d.visibilityChanged.connect(lambda vis, w=widget: vis and self._refresh_widget(w))
-        self.registers.setMinimumWidth(250)
+            d.visibilityChanged.connect(self._schedule_adapt)
+            d.dockLocationChanged.connect(self._schedule_adapt)
+        self.registers.setMinimumWidth(190)  # its table scrolls; a higher minimum would keep a narrow window from shrinking
         self.memory.setMinimumWidth(470)
         self._default_layout()
 
@@ -285,6 +303,8 @@ class MainWindow(QMainWindow):
         self.tabifyDockWidget(first, second)
 
     def _reset_docks(self):
+        self._compact = None  # a layout command replaces any automatic grouping
+        self._user_narrow = False
         for d in self.docks.values():
             d.setFloating(False)
             self.removeDockWidget(d)
@@ -359,8 +379,10 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, self._size_trainer_dock)
 
     def _side_scale(self, widths: list[int]) -> float:
-        """<= 1: shrink the side columns on a narrow window so the editor keeps about 35 % of the width."""
-        return max(0.3, min(1.0, 0.65 * self.width() / sum(widths)))
+        """<= 1: shrink the side columns on a narrow window so the editor keeps about 35 % of the width, and
+        never less than its minimum width."""
+        room = min(0.65 * self.width(), self.width() - self.EDITOR_MIN_WIDTH)
+        return max(0.3, min(1.0, room / sum(widths)))
 
     def _resize_docks(self, docks: list[QDockWidget], sizes: list[int], orientation: Qt.Orientation,
                       floor: bool = True):
@@ -386,7 +408,7 @@ class MainWindow(QMainWindow):
         self.resizeDocks(docks, out, orientation)
 
     def _apply_beginner_sizes(self):
-        if self.mode != "beginner":
+        if self.mode != "beginner" or self._compact is not None:
             return
         D = self.docks
         H, V = Qt.Orientation.Horizontal, Qt.Orientation.Vertical
@@ -427,9 +449,10 @@ class MainWindow(QMainWindow):
         else:
             self._default_layout()
             QTimer.singleShot(0, lambda: self._apply_default_sizes(force=True))
+        self._schedule_adapt()
 
     def _apply_default_sizes(self, force: bool = False):
-        if self.mode != "advanced" or (self._layout_restored and not force):
+        if self.mode != "advanced" or (self._layout_restored and not force) or self._compact is not None:
             return
         D = self.docks
         H, V = Qt.Orientation.Horizontal, Qt.Orientation.Vertical
@@ -1479,7 +1502,7 @@ class MainWindow(QMainWindow):
     def _set_mode(self, mode: str, save: bool = True, first: bool = False):
         mode = mode if mode in ("beginner", "advanced") else "beginner"
         if not first and self.mode == "advanced" and mode != "advanced":
-            self.prefs.q.setValue("window/state_advanced", self.saveState())
+            self.prefs.q.setValue("window/state_advanced", self._state_for_save())
         changed = mode != self.mode or first
         self.mode = mode
         beginner = mode == "beginner"
@@ -1505,12 +1528,14 @@ class MainWindow(QMainWindow):
             else:
                 state = self.prefs.q.value("window/state_advanced")
                 if isinstance(state, QByteArray) and not state.isEmpty() and not first:
+                    self._compact = None
                     self.restoreState(state)
                     self._layout_restored = True
                     self._place_docks_missing_from(state, "advanced")
                 elif not first:
                     self._default_layout()
         self._schedule_fit_toolbars()
+        self._schedule_adapt()
         if not first:
             self.say("Beginner mode: the essentials only. Switch to Advanced (toolbar or View menu) for every panel."
                      if beginner else "Advanced mode: all panels.")
@@ -1694,6 +1719,154 @@ class MainWindow(QMainWindow):
         if (x, y) != (frame.x(), frame.y()):
             self.move(x, y)
 
+    # ------------------------------------------------------ responsive workspace
+    _COMPACT_ORDER = ("registers", "flags", "explain", "instructions", "memory", "stack", "io", "symbols",
+                      "interrupts", "trainer")
+
+    def _adaptive_docks(self) -> dict[str, QDockWidget]:
+        """The docks that take part in the responsive layout, by object name (Phase 2 adds its CPU panel)."""
+        return self.docks
+
+    def _layout_signature(self, keys=None) -> tuple:
+        """Where the given docks are (default: every visible one). Used to tell the automatic regrouping from a
+        rearrangement by the user; docks that are hidden do not take part."""
+        if keys is None:
+            keys = {k for k, d in self._adaptive_docks().items() if not d.isHidden()}
+        out = []
+        for k in sorted(keys):
+            d = self._adaptive_docks()[k]
+            tabs = tuple(sorted(t.objectName() for t in self.tabifiedDockWidgets(d) if t.objectName() in keys))
+            area = "float" if d.isFloating() else str(self.dockWidgetArea(d))
+            out.append((k, d.isHidden(), area, tabs))
+        return tuple(out)
+
+    def _schedule_adapt(self, *_):
+        if self._adapt_pending or self._adapting:
+            return
+        self._adapt_pending = True
+        QTimer.singleShot(0, self._adapt_layout)
+
+    def _docked_visible(self, area) -> list[QDockWidget]:
+        return [d for d in self._adaptive_docks().values()
+                if not d.isHidden() and not d.isFloating() and self.dockWidgetArea(d) == area]
+
+    def _adapt_layout(self):
+        """Keep the editor usable: on a narrow window gather the docks of both sides into one tabbed column, and
+        undo that when the window is wide again (unless the user rearranged the docks meanwhile).
+
+        Nothing is ever hidden or closed. The editor's own minimum width (the central widget) is enforced by Qt;
+        this only decides how the docks are arranged within the rest. It works in logical pixels, so it behaves
+        the same at any display scale; it runs again on resize, when a dock is shown or moved and on a screen change.
+        """
+        self._adapt_pending = False
+        if self._adapting or not self.isVisible() or self.isMinimized() or not hasattr(self, "docks"):
+            return
+        self._adapting = True
+        try:
+            L, R = Qt.DockWidgetArea.LeftDockWidgetArea, Qt.DockWidgetArea.RightDockWidgetArea
+            w = self.width()
+            narrow = w < self.COMPACT_BELOW
+            wide = w >= self.COMPACT_BELOW + self.COMPACT_HYSTERESIS
+            if wide:
+                self._user_narrow = False
+            c = self._compact
+            if c is None:
+                if narrow and not self._user_narrow:
+                    left, right = self._docked_visible(L), self._docked_visible(R)
+                    if left and right:
+                        self._compact_docks(left + right)
+                return
+            untouched = self._layout_signature(c["vis"]) == c["sig"]
+            if not wide:
+                joiners = [d for d in self._docked_visible(L) if d.objectName() not in c["vis"]]
+                if untouched and joiners:  # a dock was opened from the View menu while grouped
+                    self._compact_docks(self._docked_visible(R) + joiners, keep_snapshot=True)
+                elif not untouched:  # the user moved docks around while narrow: respect it
+                    self._compact = None
+                    self._user_narrow = True
+                return
+            # wide again: separate the docks, but only if the user did not arrange them meanwhile
+            self._compact = None
+            if untouched:
+                was_visible = {k for k, d in self._adaptive_docks().items() if not d.isHidden()}
+                self._hold_size()
+                floats = {k: d.geometry() for k, d in self._adaptive_docks().items()
+                          if d.isFloating() and not d.isHidden()}
+                self.restoreState(c["state"])  # (this also restores the toolbar rows as they were when narrow)
+                self._fit_toolbars()
+                self._schedule_fit_toolbars()
+                self._release_size()
+                for k, d in self._adaptive_docks().items():  # the same docks as before: none lost, none newly opened
+                    d.setVisible(k in was_visible)
+                for k, g in floats.items():  # a floating panel stays where the user put it
+                    d = self._adaptive_docks()[k]
+                    d.setFloating(True)
+                    d.setGeometry(g)
+                    d.show()
+                QTimer.singleShot(0, self._after_uncompact)
+        finally:
+            self._adapting = False
+
+    def _hold_size(self):
+        """Re-docking can make Qt grow the window to the docks' preferred size for one event-loop turn, while the
+        new tab group settles. Remember the user's size and keep that transient state from being painted."""
+        self._held = self.size()
+        self.setUpdatesEnabled(False)
+
+    def _release_size(self):
+        size = self._held
+
+        def restore():
+            if self.size() != size and not (self.isMaximized() or self.isFullScreen()):
+                self.resize(size)
+
+        def release():
+            restore()
+            self.setUpdatesEnabled(True)
+        QTimer.singleShot(0, release)
+
+    def _after_uncompact(self):
+        if self.mode == "beginner":
+            self._apply_beginner_sizes()
+        else:
+            self._apply_default_sizes(force=True)
+
+    def _compact_docks(self, docks: list[QDockWidget], keep_snapshot: bool = False):
+        """Tab ``docks`` (every docked, visible dock of the left and right areas) into one group on the right."""
+        R = Qt.DockWidgetArea.RightDockWidgetArea
+        snap = self._compact["state"] if keep_snapshot and self._compact else self.saveState()
+        self._hold_size()
+        order = {k: i for i, k in enumerate(self._COMPACT_ORDER)}
+        group = sorted(docks, key=lambda d: order.get(d.objectName(), 99))
+        want_front = "trainer" if self._lab_active else "registers"  # a running lab keeps the kit in front
+        front = next((d for d in group if d.objectName() == want_front),
+                     next((d for d in group if d.objectName() == "registers"), group[0]))
+        first = group[0]
+        for d in group:  # take them all out first: tabifying docks that are already in other tab groups is unreliable
+            self.removeDockWidget(d)
+        for d in group:
+            self.addDockWidget(R, d)
+            d.show()
+        for d in group[1:]:
+            self.tabifyDockWidget(first, d)
+        front.raise_()
+        self._release_size()
+        want = max(self.SIDE_COLUMN_MIN, min(round(0.4 * self.width()), self.width() - self.EDITOR_MIN_WIDTH))
+        self.resizeDocks([front], [want], Qt.Orientation.Horizontal)
+        vis = {k for k, d in self._adaptive_docks().items() if not d.isHidden()}
+        self._compact = {"state": snap, "vis": vis, "sig": self._layout_signature(vis)}
+
+    def _state_for_save(self) -> QByteArray:
+        """The layout to persist: the user's own arrangement, not the temporary narrow-window grouping."""
+        c = self._compact
+        if c is not None and self._layout_signature(c["vis"]) == c["sig"]:
+            return c["state"]
+        return self.saveState()
+
+    def _on_screen_changed(self, *_):
+        self._schedule_adapt()
+        QTimer.singleShot(0, self._schedule_fit_toolbars)
+
     # ------------------------------------------------------------ toolbar fit
     def _toolbars_in_row(self) -> list[QToolBar]:
         return [tb for tb in (self.tb_file, self.tb_run, self.tb_extra)
@@ -1744,10 +1917,16 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, e):
         super().resizeEvent(e)
         self._fit_toolbars()
+        self._schedule_adapt()
 
     def showEvent(self, e):
         super().showEvent(e)
         self._schedule_fit_toolbars()
+        self._schedule_adapt()
+        h = self.windowHandle()
+        if h is not None and not getattr(self, "_screen_hooked", False):
+            self._screen_hooked = True
+            h.screenChanged.connect(self._on_screen_changed)
 
     def closeEvent(self, e):
         if not self._maybe_save():
@@ -1756,7 +1935,8 @@ class MainWindow(QMainWindow):
         self.timer.stop()
         q = self.prefs.q
         q.setValue("window/geometry", self.saveGeometry())
-        q.setValue("window/state", self.saveState())
+        state = self._state_for_save()
+        q.setValue("window/state", state)
         if self.mode == "advanced":
-            q.setValue("window/state_advanced", self.saveState())
+            q.setValue("window/state_advanced", state)
         e.accept()

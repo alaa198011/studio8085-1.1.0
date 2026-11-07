@@ -21,6 +21,9 @@
 - **Beginner mode keeps the kit visible during a lab.** Starting Experiment 1 or a Lab program shows the kit (tabbed next to Explain) and
   keeps it through mode switches and *Reset layout* until the lab ends; it still starts hidden when no lab is running, and stays reachable
   from the View menu. It fits and leaves the editor usable at 800x600, 1024x600, 1280x720 and 1366x768.
+- **Responsive workspace.** The editor keeps at least 440 logical px; on a window narrower than about 980 px the docks of both sides
+  are tabbed into one column (reversible on widening, never hides a panel, never saved as the user's layout). Check boxes and radio
+  buttons now have a visible border in the Light and High Contrast themes (>= 3:1).
 - `docs/TRAINER_KIT.md`: ports, bit order, segment map, polarity, hex table, resets, limitations, how to run the lab.
 - `--selftest` also checks the trainer kit (switches -> `IN` -> A -> `OUT` -> LEDs, and that disconnecting restores the CPU hooks).
 

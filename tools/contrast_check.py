@@ -29,7 +29,11 @@ def pairs(t):
     text += [(f"syntax {k} on editor", v, c["base"]) for k, v in sx.items()]
     marks = [("read heat on editor", c["heat_read"], c["base"]), ("write heat on editor", c["heat_write"], c["base"]),
              ("exec heat on editor", c["heat_exec"], c["base"]), ("breakpoint on gutter", c["bp"], c["gutter_bg"]),
-             ("exec arrow on gutter", c["exec_arrow"], c["gutter_bg"])]
+             ("exec arrow on gutter", c["exec_arrow"], c["gutter_bg"]),
+             ("checkbox border on panel", c["control_border"], c["panel"]),
+             ("checkbox border on window", c["control_border"], c["window"]),
+             ("checkbox border on editor", c["control_border"], c["base"]),
+             ("checked box fill on panel", c["accent"], c["panel"])]
     return text, marks
 
 

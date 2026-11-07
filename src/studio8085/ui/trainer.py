@@ -619,6 +619,10 @@ class TrainerPanel(QWidget):
         side = QVBoxLayout()
         self.mode = QComboBox()
         self.mode.setAccessibleName("Seven-segment mode")
+        # may be narrower than its longest item so it always fits a narrow dock (the popup list stays full width)
+        self.mode.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.mode.setMinimumContentsLength(12)
+        self.mode.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)  # never wider than the dock
         self.mode.addItem("Raw segment bits", RAW)
         self.mode.addItem("Hex decode (low nibble)", HEX)
         self.mode.setToolTip("Raw segment bits: bit0=a, bit1=b, ... bit6=g, bit7=DP; 1 lights a segment.\n"

@@ -20,7 +20,7 @@ from html import escape
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPainterPath, QPen, QPolygonF
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QFrame, QGraphicsEllipseItem, QGraphicsItem, QGraphicsObject,
-                               QGraphicsPathItem, QGraphicsScene, QGraphicsSimpleTextItem, QGraphicsView,
+                               QGraphicsPathItem, QGraphicsScene, QGraphicsSimpleTextItem, QGraphicsTextItem, QGraphicsView,
                                QHBoxLayout, QLabel, QPushButton, QSizePolicy, QSplitter, QTabWidget, QTextBrowser, QVBoxLayout,
                                QWidget)
 
@@ -30,7 +30,31 @@ from .docks import mono
 from .themes import DARK, Theme
 
 TITLE = "Interactive CPU Architecture"
-SCENE_W, SCENE_H = 1030, 710
+SCENE_W, SCENE_H = 1030, 722
+
+# The one-line explanation under the diagram wraps over up to three lines instead of being cut with "...".
+CAPTION_X, CAPTION_Y, CAPTION_W = 34, 657, SCENE_W - 2 * 34
+
+
+class CaptionItem(QGraphicsTextItem):
+    """Word-wrapped caption (never elided). Same small API as the text item it replaces."""
+
+    def __init__(self):
+        super().__init__("")
+        self.document().setDocumentMargin(2)
+        self.setTextWidth(CAPTION_W)
+        self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)  # never takes clicks away from the diagram
+
+    def setBrush(self, brush: QBrush):
+        self.setDefaultTextColor(brush.color())
+
+    def setText(self, text: str):
+        self.setPlainText(text)
+        self.setToolTip("")
+
+    def text(self) -> str:
+        return self.toPlainText()
+
 
 # ------------------------------------------------------------------ geometry
 _REG_W, _REG_H = 100, 85
@@ -740,8 +764,8 @@ class CpuArchitecturePanel(QWidget):
             n.focused.connect(self._node_focused)
             self.scene.addItem(n)
             self.nodes[nid] = n
-        self.caption = QGraphicsSimpleTextItem("")
-        self.caption.setPos(34, 662)
+        self.caption = CaptionItem()
+        self.caption.setPos(CAPTION_X, CAPTION_Y)
         self.caption.setZValue(5)
         self.scene.addItem(self.caption)
         self._draw_background()
@@ -1057,7 +1081,6 @@ class CpuArchitecturePanel(QWidget):
                 fi.setVisible(False)
         if a is None and rec is not None and rec.kind == "instr":
             cap = f"{rec.text}: {rec.summary}" if rec.summary else rec.text
-            cap = cap if len(cap) <= 118 else cap[:115] + "..."
         # node state ---------------------------------------------------
         roles = rec.role_map if rec is not None else {}
         tags = rec.tag_map if rec is not None else {}

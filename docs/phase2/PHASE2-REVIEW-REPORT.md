@@ -153,10 +153,64 @@ cause it. I did not add a layout fix because it would change approved Phase 1 be
 ## 14. Remaining limitations (additions)
 - Experiment 1 masking covers only A, the input port and the output port; flags and register pairs are not masked (fine for this IN/OUT experiment).
 - `StepRecorder.history` holds unmasked records, but no UI reads it.
-- At small window sizes (800x600) the editor is very narrow (pre-existing Phase 1 layout) and a docked CPU panel is cramped.
+- At small window sizes (800x600) the editor now keeps 440 px (section 16); a docked CPU panel is small there and scrolls: float it.
 - CI takes about 2 hours per run (GUI tests); not changed here.
 
 ## 15. Final CI (last commit)
 The last commit contains only the workflow `fetch-depth` change and this report; its CI run and result are given in the final hand-off message.
+
+## 16. Final UX correction (responsive workspace, caption, check boxes, screenshots)
+
+**Cause.** At 800x600 the editor was 187-204 px wide on Phase 1 alone (63 px once the CPU panel's right-hand dock was involved):
+side docks were sized in fixed proportions and nothing guaranteed the editor a minimum.
+
+**Fix (Phase 1 branch, merged here by a merge commit).** The central widget has a minimum width of 440 logical px (about 60 source columns plus
+the gutter). Below about 980 px the docks of both sides are tabbed into one column (reversible, never closes or hides a dock, regroups a dock
+opened later, not saved as the user's layout, a big-screen layout is clamped on restore, re-evaluated on resize / dock change / screen change).
+See `docs/TRAINER_KIT.md`, "Responsive layout".
+
+**Phase 2 specifics.** The CPU panel dock takes part in the same logic (`_adaptive_docks`): docked on the right it joins the right-hand tab
+group, is brought to the front and gets up to 640 px (the editor keeps its minimum); on a narrow window it tabifies with every other dock; floating,
+docking, hiding and widening again all keep it where the user put it. Opening it floating at a wide size, narrowing the window and docking it
+afterwards is covered (it used to stay in a separate stacked group).
+
+| Editor width (px), Advanced, all docks shown | 800x600 | 1024x600 | 1280x720 | 1366x768 | 1920x1080 |
+|---|---|---|---|---|---|
+| before (Phase 1 branch bd82989) | 187 | 313 | 436 | 466 | 1018 |
+| after | 544 | 440 | 440 | 466 | 1018 |
+
+Beginner before: 204 / 335 / 458 / 544 / 1098; after: 544 / 440 / 458 / 544 / 1098. With the CPU panel docked (screenshots) the editor is
+over 440 px at every size; it was 63 px at 800x600 before.
+
+**Caption.** The one-line explanation under the diagram (`stack_PUSH`) was cut with "..." after 118 characters. It is now a word-wrapped text item
+(up to three lines, 10 pt bold unchanged) placed below every block inside the scene; a test checks the longest explanation of every opcode.
+
+**Check boxes.** Unchecked boxes were drawn with the ordinary border colour (1.4:1 on the Light panel). Themes have a `control_border` colour and the
+QSS draws the indicator with it (4.4:1 or more on panel, window and editor in all themes; checked boxes fill with the accent, 5.2:1+). Verified by
+`tools/contrast_check.py`, by theme tests and by rendering the real widgets (Phase 1 and Phase 2 panels).
+
+**Experiment 1 masking after the layout change.** Docking, tabifying (narrow window), raising, floating, hiding / re-showing and widening again
+with the CPU panel open before the prediction: A, the IN port and the OUT port stay masked in every state (new test
+`test_masking_survives_tabifying_floating_and_restoring_the_cpu_panel`, both the narrow and the wide ending); the earlier masking tests pass unchanged.
+
+**Controlled Step Into cost** (`tools/phase2_step_perf.py`, offscreen, Windows, 12 logical CPUs, nothing else running; 1366x768 Advanced, loop program,
+200 warm-up steps, 1000 timed Step Into calls per run, 3 runs; each call includes the window refresh and panel update):
+
+| Mode | median of the 3 means | median of the 3 p95 |
+|---|---|---|
+| Panel off | 11.28 ms | 12.51 ms |
+| Panel docked (tabbed with the other docks) | 9.09 ms | 10.31 ms |
+| Panel floating | 15.48 ms | 17.30 ms |
+
+Docked is faster than off because the other right-hand panels are hidden tabs and are not refreshed; the floating panel costs about 4 ms per step
+in this refresh-everything measurement. The load of the machine was not otherwise measured (no other Python or test process running).
+
+**Screenshots** (`docs/phase2/screenshots/`, regenerated with `tools/phase2_shots.py`, real Windows windows): 64 files, including
+`size_{800x600,1024x600,1280x720,1366x768,1920x1080}_{docked,main,panel}_{dark,light,high_contrast}` (45), `stack_PUSH`, `stack_PUSH_light`,
+`stack_PUSH_high_contrast`, the experiment 1 masked shots and the labs. Opened and checked after the fix: `stack_PUSH_light` (caption complete, boxes
+visible), `size_800x600_docked_dark`, `size_800x600_main_light`, `size_1024x600_docked_light` and `_docked_high_contrast`, `size_1024x600_main_dark`,
+`size_1280x720_docked_high_contrast`, `size_1280x720_main_light`, `size_1366x768_docked_dark` and `_docked_light`, `size_1920x1080_docked_dark`
+and `_docked_light`. Remaining note: on an 800x600 window a docked panel is still small (about 300 px wide beside the 440 px editor) and scrolls;
+floating it is better there.
 
 STATUS: READY_FOR_OWNER_REVIEW

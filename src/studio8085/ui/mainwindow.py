@@ -1527,10 +1527,41 @@ class MainWindow(QMainWindow):
         d.setFloating(True)
         d.hide()
         d.visibilityChanged.connect(self._cpu_visibility)
+        d.visibilityChanged.connect(self._schedule_adapt)  # joins the responsive layout like every dock
+        d.dockLocationChanged.connect(self._cpu_docked)
+        d.dockLocationChanged.connect(self._schedule_adapt)
         # Experiment 1 may already be hiding the answer: the new panel must start masked
         if self.trainer.concealed:
             p = self.kit.ports
             self.cpu_panel.set_concealed(True, (p.switches_in, p.leds_out, p.seven_segment_out))
+
+    def _cpu_docked(self, area):
+        """Docked on the right, the CPU panel joins the tab group of the other right-hand docks (a tall stack of
+        panels would leave every one of them cramped), comes to the front and gets the width a diagram needs
+        (the editor keeps its minimum)."""
+        if area != Qt.DockWidgetArea.RightDockWidgetArea or self._adapting or self.cpu_dock is None:
+            return
+        d = self.cpu_dock
+        if d.isFloating() or d.isHidden():
+            return
+        if not self.tabifiedDockWidgets(d):
+            mate = next((m for m in self._docked_visible(area) if m is not d), None)
+            if mate is not None:
+                self._adapting = True
+                try:
+                    self.tabifyDockWidget(mate, d)
+                    d.raise_()
+                finally:
+                    self._adapting = False
+        QTimer.singleShot(0, self._size_cpu_dock)
+
+    def _size_cpu_dock(self):
+        d = self.cpu_dock
+        if d is None or d.isFloating() or d.isHidden():
+            return
+        want = min(max(640, round(0.42 * self.width())), self.width() - self.EDITOR_MIN_WIDTH)
+        if want > d.width():
+            self.resizeDocks([d], [want], Qt.Orientation.Horizontal)
 
     def _toggle_cpu_view(self, on: bool):
         if on:
@@ -1873,7 +1904,10 @@ class MainWindow(QMainWindow):
 
     def _adaptive_docks(self) -> dict[str, QDockWidget]:
         """The docks that take part in the responsive layout, by object name (Phase 2 adds its CPU panel)."""
-        return self.docks
+        d = dict(self.docks)
+        if self.cpu_dock is not None:  # Phase 2: the CPU Architecture panel joins the same responsive logic
+            d["cpuview"] = self.cpu_dock
+        return d
 
     def _layout_signature(self, keys=None) -> tuple:
         """Where the given docks are (default: every visible one). Used to tell the automatic regrouping from a
@@ -1924,11 +1958,15 @@ class MainWindow(QMainWindow):
                     if left and right:
                         self._compact_docks(left + right)
                 return
-            untouched = self._layout_signature(c["vis"]) == c["sig"]
+            late = self._late_arrivals(c)
+            untouched = self._compact_untouched(c)
             if not wide:
-                joiners = [d for d in self._docked_visible(L) if d.objectName() not in c["vis"]]
-                if untouched and joiners:  # a dock was opened from the View menu while grouped
-                    self._compact_docks(self._docked_visible(R) + joiners, keep_snapshot=True)
+                joiners = [d for d in self._docked_visible(L) + self._docked_visible(R)
+                           if d.objectName() not in c["vis"] or d.objectName() in late]
+                if untouched and joiners:  # a dock was opened (View menu, docked CPU panel) while grouped
+                    group = [d for d in self._docked_visible(R) if d not in joiners] + joiners
+                    self._compact_docks(group + [d for d in self._docked_visible(L) if d not in group],
+                                        keep_snapshot=True, show=joiners[-1])
                 elif not untouched:  # the user moved docks around while narrow: respect it
                     self._compact = None
                     self._user_narrow = True
@@ -1940,12 +1978,16 @@ class MainWindow(QMainWindow):
                 self._hold_size()
                 floats = {k: d.geometry() for k, d in self._adaptive_docks().items()
                           if d.isFloating() and not d.isHidden()}
+                docked = {k for k, d in self._adaptive_docks().items() if not d.isFloating() and not d.isHidden()}
                 self.restoreState(c["state"])  # (this also restores the toolbar rows as they were when narrow)
                 self._fit_toolbars()
                 self._schedule_fit_toolbars()
                 self._release_size()
                 for k, d in self._adaptive_docks().items():  # the same docks as before: none lost, none newly opened
                     d.setVisible(k in was_visible)
+                for k in docked:  # a panel docked meanwhile stays docked even if the snapshot had it floating
+                    if self._adaptive_docks()[k].isFloating():
+                        self._adaptive_docks()[k].setFloating(False)
                 for k, g in floats.items():  # a floating panel stays where the user put it
                     d = self._adaptive_docks()[k]
                     d.setFloating(True)
@@ -1979,7 +2021,8 @@ class MainWindow(QMainWindow):
         else:
             self._apply_default_sizes(force=True)
 
-    def _compact_docks(self, docks: list[QDockWidget], keep_snapshot: bool = False):
+    def _compact_docks(self, docks: list[QDockWidget], keep_snapshot: bool = False,
+                       show: QDockWidget | None = None):
         """Tab ``docks`` (every docked, visible dock of the left and right areas) into one group on the right."""
         R = Qt.DockWidgetArea.RightDockWidgetArea
         snap = self._compact["state"] if keep_snapshot and self._compact else self.saveState()
@@ -1987,8 +2030,9 @@ class MainWindow(QMainWindow):
         order = {k: i for i, k in enumerate(self._COMPACT_ORDER)}
         group = sorted(docks, key=lambda d: order.get(d.objectName(), 99))
         want_front = "trainer" if self._lab_active else "registers"  # a running lab keeps the kit in front
-        front = next((d for d in group if d.objectName() == want_front),
-                     next((d for d in group if d.objectName() == "registers"), group[0]))
+        front = show if show in group else next(
+            (d for d in group if d.objectName() == want_front),
+            next((d for d in group if d.objectName() == "registers"), group[0]))  # a dock just opened is the one shown
         first = group[0]
         for d in group:  # take them all out first: tabifying docks that are already in other tab groups is unreliable
             self.removeDockWidget(d)
@@ -2000,14 +2044,33 @@ class MainWindow(QMainWindow):
         front.raise_()
         self._release_size()
         want = max(self.SIDE_COLUMN_MIN, min(round(0.4 * self.width()), self.width() - self.EDITOR_MIN_WIDTH))
+        if any(d.objectName() == "cpuview" for d in group):  # a diagram needs room: the editor keeps its minimum
+            want = max(want, min(self.width() - self.EDITOR_MIN_WIDTH, 640))
         self.resizeDocks([front], [want], Qt.Orientation.Horizontal)
-        vis = {k for k, d in self._adaptive_docks().items() if not d.isHidden()}
-        self._compact = {"state": snap, "vis": vis, "sig": self._layout_signature(vis)}
+        ad = self._adaptive_docks()
+        vis = {k for k, d in ad.items() if not d.isHidden()}
+        self._compact = {"state": snap, "vis": vis, "sig": self._layout_signature(vis),
+                         "floating": {k for k in vis if ad[k].isFloating()}}
+
+    def _late_arrivals(self, c: dict) -> set:
+        """Panels that were floating when the docks were grouped and have been docked since (the CPU panel):
+        new arrivals, not a rearrangement by the user."""
+        ad = self._adaptive_docks()
+        return {k for k in c["floating"] if k in ad and not ad[k].isFloating() and not ad[k].isHidden()}
+
+    def _compact_untouched(self, c: dict) -> bool:
+        """True while the docks that were docked when they were grouped still sit where the grouping put them.
+        Floating, closing or re-docking a panel since then (the CPU panel, say) is not a rearrangement."""
+        ad = self._adaptive_docks()
+        keys = {k for k in c["vis"] if k in ad and not ad[k].isFloating() and not ad[k].isHidden()
+                and k not in c["floating"]}
+        was = tuple((k, h, a, tuple(t for t in tabs if t in keys)) for k, h, a, tabs in c["sig"] if k in keys)
+        return self._layout_signature(keys) == was
 
     def _state_for_save(self) -> QByteArray:
         """The layout to persist: the user's own arrangement, not the temporary narrow-window grouping."""
         c = self._compact
-        if c is not None and self._layout_signature(c["vis"]) == c["sig"]:
+        if c is not None and self._compact_untouched(c):
             return c["state"]
         return self.saveState()
 

@@ -299,3 +299,28 @@ def test_an_unchecked_checkbox_is_drawn_with_a_visible_box(app, theme):
     assert worst >= 3.0, (theme, worst)
     from studio8085.ui.themes import apply_theme as _a  # restore the default look for other tests
     _a(app, available_themes()["Dark"])
+
+
+# ------------------------------------------- larger fonts (Linux CI fonts are wider than the Windows ones)
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("pt", [12, 13])
+def test_every_trainer_control_is_reachable_at_800x600_with_a_wide_ui_font(app, mode, pt):
+    """Regression (CI on Linux): at 800 x 600 the dock column is about 320 px; the Seven-segment combo box
+    stretched to the panel's minimum width (423 px) and could not be scrolled fully into view."""
+    from test_trainer_gui import _geometry_problems
+    old = app.font()
+    f = app.font()
+    f.setFamily("Verdana")  # a wide font where available (the substitute elsewhere is fine)
+    f.setPointSize(pt)
+    app.setFont(f)
+    try:
+        w = _window(app, mode, (800, 600))
+        try:
+            w.start_experiment()
+            _settle(app)
+            assert w.docks["trainer"].isVisible()
+            assert _geometry_problems(w, app) == [], (mode, pt)
+        finally:
+            _close(app, w)
+    finally:
+        app.setFont(old)

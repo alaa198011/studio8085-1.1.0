@@ -167,6 +167,17 @@ Two more lab programs are in **Lab**:
 * Saved layouts are respected. A layout saved by 8085 Studio 1.1.0 (before the kit existed) restores every
   old panel as it was; the kit then takes its default place for the mode.
 
+### Responsive layout (small windows)
+
+The code editor always keeps at least **440 logical pixels** (about 60 source columns plus the line-number
+gutter) and the panels scroll instead of squeezing it. On a window narrower than about 980 px the panels
+of the left and right sides are gathered into **one tabbed column** (Registers, Flags, Explain, ..., Trainer
+Kit); no panel is closed or hidden, and a panel opened from the View menu joins the group. When the window
+is wide again (about 1040 px) they separate to where they were, unless you rearranged the panels yourself in
+the meantime. The grouping is never saved as your layout, and a layout saved on a large screen is clamped
+the same way when it is restored on a small one. Sizes are logical, so it behaves the same at 125 %, 150 % and
+200 % display scaling.
+
 ## While a program runs
 
 The CPU runs in batches from a timer on the GUI thread; the kit is redrawn from the normal refresh path

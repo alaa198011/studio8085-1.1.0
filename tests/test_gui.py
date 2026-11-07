@@ -1101,6 +1101,8 @@ def memory_columns_unreachable(w, app):
     from PySide6.QtWidgets import QAbstractItemView
     t = w.memory.table
     holder = w.docks["memory"].widget()
+    w.docks["memory"].raise_()  # on a narrow window the docks share one tabbed column: bring this tab to the front
+    app.processEvents()
     bad = []
     # a column the user cannot see at first must be reachable with a visible scroll bar (scrollTo
     # alone also works with ScrollBarAlwaysOff, which a mouse user could not scroll)

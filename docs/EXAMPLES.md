@@ -55,6 +55,19 @@ Suggested order for a first lab: 01 - 03, then 05, 07, 09, 10 (the first loop), 
 | 09 | Reverse a string | two pointers, a 16-bit compare, ASCII data |
 | 10 | Fill and copy a memory page | block moves and the memory heatmap |
 
+## Trainer Kit lab programs
+
+Three more programs, under **Lab** (not counted in the 27 above), use the Virtual 8085 Trainer Kit
+(see [TRAINER_KIT.md](TRAINER_KIT.md)):
+
+| Program | Shows |
+|---|---|
+| E1 Read switches, control LEDs | `IN 00H` / `OUT 01H` / `HLT` - the program of Experiment 1 |
+| E1b Seven-segment raw bits | `MVI A,76H` / `OUT 02H` lights b, c, e, f, g = **H**; `F6H` adds the decimal point |
+| E1c Seven-segment hex decode | `IN 00H` / `OUT 01H` / `OUT 02H` with the display in Hex decode mode: the low nibble as 0-F |
+
+Each has a result test in `tests/test_trainer_gui.py` and `tests/test_peripherals.py`.
+
 ## Adding your own
 
 Put `; @title: ...`, `; @topic: ...` and `; @validation: T` in the leading comment block of any `.asm` file. The Explain panel

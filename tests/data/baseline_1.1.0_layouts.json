@@ -1,0 +1,68 @@
+{
+ "source": "8085 Studio baseline 7222094 (before Phase 1), offscreen, 1366x768",
+ "states": {
+  "beginner": {
+   "state": "AAAA/wAAAAD9AAAAAwAAAAAAAAEiAAACKfwCAAAAA/wAAABfAAAAcwAAAAAA////+gAAAAACAAAAAfsAAAAUAGkAbgB0AGUAcgByAHUAcAB0AHMBAAAAAP////8AAAAAAAAAAPsAAAASAHIAZQBnAGkAcwB0AGUAcgBzAQAAAEMAAAFOAAAAWQD////7AAAACgBmAGwAYQBnAHMBAAABlwAAANUAAABZAP///wAAAAEAAAIIAAACKfwCAAAAA/wAAABfAAAAcwAAAAAA////+gAAAAACAAAAA/sAAAAKAHMAdABhAGMAawEAAAAA/////wAAAAAAAAAA+wAAAAQAaQBvAQAAAAD/////AAAAAAAAAAD7AAAADgBzAHkAbQBiAG8AbABzAQAAAAD/////AAAAAAAAAAD8AAAAQwAAAUwAAABzAQAAGfoAAAAAAgAAAAL7AAAADgBlAHgAcABsAGEAaQBuAQAAAAD/////AAAAWQD////7AAAAGABpAG4AcwB0AHIAdQBjAHQAaQBvAG4AcwEAAAAA/////wAAAFkA////+wAAAAwAbQBlAG0AbwByAHkBAAABlQAAANcAAABZAP///wAAAAMAAAVWAAAAePwBAAAAAvwAAAAAAAACgAAAAAAA////+gAAAAABAAAAAvsAAAAOAGwAaQBzAHQAaQBuAGcBAAAAAP////8AAAAAAAAAAPsAAAAKAHQAcgBhAGMAZQEAAAAA/////wAAAAAAAAAA/AAAAAAAAAVWAAAAhQD////6AAAAAAEAAAAC+wAAABAAcAByAG8AYgBsAGUAbQBzAQAAAAD/////AAAARQD////7AAAADABvAHUAdABwAHUAdAEAAAAA/////wAAAEUA////AAACIAAAAikAAAAEAAAABAAAAAgAAAAI/AAAAAEAAAACAAAAAwAAAA4AdABiAF8AZgBpAGwAZQEAAAAA/////wAAAAAAAAAAAAAADAB0AGIAXwByAHUAbgEAAAB1/////wAAAAAAAAAAAAAAEAB0AGIAXwB0AG8AbwBsAHMBAAACg/////8AAAAAAAAAAA==",
+   "geometry": "AdnQywADAAAAAAAAAAAAAAAABVkAAAMDAAAAAgAAAAIAAAVXAAADAQAAAAAAAAAAAyAAAAACAAAAAgAABVcAAAMB",
+   "visible": [
+    "explain",
+    "flags",
+    "instructions",
+    "memory",
+    "output",
+    "problems",
+    "registers"
+   ],
+   "restored_by_baseline": [
+    "explain",
+    "flags",
+    "instructions",
+    "interrupts",
+    "io",
+    "listing",
+    "memory",
+    "output",
+    "problems",
+    "registers",
+    "stack",
+    "symbols",
+    "trace"
+   ]
+  },
+  "advanced": {
+   "state": "AAAA/wAAAAD9AAAAAwAAAAAAAAEhAAACEPwCAAAAAvsAAAASAHIAZQBnAGkAcwB0AGUAcgBzAQAAAEMAAAEWAAAAWQD////8AAABXwAAAPQAAABzAQAAGfoAAAAAAgAAAAT7AAAACgBmAGwAYQBnAHMBAAAAAP////8AAABZAP////sAAAAOAGUAeABwAGwAYQBpAG4BAAAAAP////8AAABZAP////sAAAAUAGkAbgB0AGUAcgByAHUAcAB0AHMBAAAAAP////8AAABZAP////sAAAAYAGkAbgBzAHQAcgB1AGMAdABpAG8AbgBzAQAAAAD/////AAAAWQD///8AAAABAAACVwAAAhD8AgAAAAL7AAAADABtAGUAbQBvAHIAeQEAAABDAAABhwAAAFkA/////AAAAdAAAACDAAAAcwEAABn6AAAAAAIAAAAD+wAAAAoAcwB0AGEAYwBrAQAAAAD/////AAAAWQD////7AAAABABpAG8BAAAAAP////8AAABZAP////sAAAAOAHMAeQBtAGIAbwBsAHMBAAAAAP////8AAABZAP///wAAAAMAAAVWAAAAkfwBAAAAAfwAAAAAAAAFVgAAAIUA////+gAAAAABAAAABPsAAAAQAHAAcgBvAGIAbABlAG0AcwEAAAAA/////wAAAEUA////+wAAAA4AbABpAHMAdABpAG4AZwEAAAAA/////wAAAEUA////+wAAAAwAbwB1AHQAcAB1AHQBAAAAAP////8AAABFAP////sAAAAKAHQAcgBhAGMAZQEAAAAA/////wAAAEUA////AAAB0gAAAhAAAAAEAAAABAAAAAgAAAAI/AAAAAEAAAACAAAAAwAAAA4AdABiAF8AZgBpAGwAZQEAAAAA/////wAAAAAAAAAAAAAADAB0AGIAXwByAHUAbgEAAAB1/////wAAAAAAAAAAAAAAEAB0AGIAXwB0AG8AbwBsAHMBAAABsv////8AAAAAAAAAAA==",
+   "geometry": "AdnQywADAAAAAAAAAAAAAAAABVkAAAMDAAAAAgAAAAIAAAVXAAADAQAAAAAAAAAAAyAAAAACAAAAAgAABVcAAAMB",
+   "visible": [
+    "explain",
+    "flags",
+    "instructions",
+    "interrupts",
+    "io",
+    "listing",
+    "memory",
+    "output",
+    "problems",
+    "registers",
+    "stack",
+    "symbols",
+    "trace"
+   ],
+   "restored_by_baseline": [
+    "explain",
+    "flags",
+    "instructions",
+    "interrupts",
+    "io",
+    "listing",
+    "memory",
+    "output",
+    "problems",
+    "registers",
+    "stack",
+    "symbols",
+    "trace"
+   ]
+  }
+ },
+ "note": "'restored_by_baseline' is what commit 7222094 itself shows when it restores that state at start-up. For a Beginner-mode state it shows all 13 panels (the panels the Beginner layout removes are not in the saved state, so they keep the default layout's visibility): a pre-existing Phase 0 behaviour."
+}

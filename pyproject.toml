@@ -34,7 +34,7 @@ studio8085 = "studio8085.app:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-"studio8085" = ["examples/*.asm", "examples/beginner/*.asm"]
+"studio8085" = ["examples/*.asm", "examples/beginner/*.asm", "examples/trainer/*.asm"]
 "studio8085.ui" = ["styles/*.qss"]
 
 [tool.pytest.ini_options]

@@ -329,6 +329,7 @@ class IOModel(QAbstractTableModel):
         self.theme: Theme | None = None
         self.font = mono(10)
         self.written: dict[int, int] = {}
+        self.concealed: frozenset[int] = frozenset()  # display only: ports whose value is shown as "??"
 
     def rowCount(self, parent=QModelIndex()):
         return 256
@@ -350,7 +351,10 @@ class IOModel(QAbstractTableModel):
             return None
         port, col = index.row(), index.column()
         v = self.machine.cpu.io[port]
+        hidden = port in self.concealed and col > 0
         if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole):
+            if hidden:
+                return "??" if col != 3 else "????????"
             return [f"{port:02X}h", f"{v:02X}", str(v), f"{v:08b}"][col]
         if role == Qt.ItemDataRole.FontRole:
             return self.font
@@ -358,7 +362,7 @@ class IOModel(QAbstractTableModel):
             return int(Qt.AlignmentFlag.AlignCenter)
         if role == Qt.ItemDataRole.ForegroundRole:
             return QBrush(self.theme.c("text") if (v or port in self.written) else self.theme.c("text_dim"))
-        if role == Qt.ItemDataRole.BackgroundRole and port in self.written:
+        if role == Qt.ItemDataRole.BackgroundRole and port in self.written and port not in self.concealed:
             age = self.machine.cpu.icount - self.written[port]
             if age < 2000:
                 return QBrush(QColor(self.theme.colors["heat_write"]).darker(300 if self.theme.dark else 100)
@@ -380,6 +384,8 @@ class IOModel(QAbstractTableModel):
 
 
 class IOPanel(QWidget):
+    HINT = "Edit a value to feed a port - IN reads it, OUT writes it."
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.model = IOModel(self)
@@ -395,12 +401,12 @@ class IOPanel(QWidget):
         self.goto = QLineEdit()
         self.goto.setPlaceholderText("Go to port (hex)")
         self.goto.setMaximumWidth(150)
-        hint = QLabel("Edit a value to feed a port - IN reads it, OUT writes it.")
-        hint.setObjectName("Dim")
+        self.hint = QLabel(self.HINT)
+        self.hint.setObjectName("Dim")
         top = QHBoxLayout()
         top.setContentsMargins(6, 6, 6, 6)
         top.addWidget(self.goto)
-        top.addWidget(hint, 1)
+        top.addWidget(self.hint, 1)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
@@ -418,6 +424,13 @@ class IOPanel(QWidget):
 
     def note_out(self, port: int, icount: int):
         self.model.written[port] = icount
+
+    def set_concealed(self, ports):
+        """Show these ports' values as ``??`` (presentation only; ``cpu.io`` is never touched)."""
+        self.model.concealed = frozenset(ports)
+        self.hint.setText("Values on the Trainer Kit's ports are hidden until you predict (Experiment 1)."
+                          if self.model.concealed else self.HINT)
+        self.model.layoutChanged.emit()
 
     def refresh(self):
         self.table.viewport().update()
@@ -684,7 +697,9 @@ class OutputPanel(QWidget):
         self.log.setFont(mono(10))
         self.log.setMaximumBlockCount(5000)
         clear = QPushButton("Clear")
-        clear.clicked.connect(self.log.clear)
+        clear.clicked.connect(self.clear)
+        self._entries: list[tuple[str, int | None, str]] = []  # (text, port, text shown while that port is concealed)
+        self._concealed: frozenset[int] = frozenset()
         top = QHBoxLayout()
         top.setContentsMargins(6, 4, 6, 4)
         top.addStretch(1)
@@ -695,8 +710,24 @@ class OutputPanel(QWidget):
         lay.addLayout(top)
         lay.addWidget(self.log)
 
-    def add(self, text: str):
-        self.log.appendPlainText(text)
+    def add(self, text: str, port: int | None = None, masked: str = ""):
+        """``port``/``masked``: an OUT line that is shown as ``masked`` while that port is concealed."""
+        self._entries.append((text, port, masked))
+        del self._entries[:-5000]
+        self.log.appendPlainText(masked if port in self._concealed and masked else text)
+
+    def clear(self):
+        self._entries.clear()
+        self.log.clear()
+
+    def set_concealed(self, ports):
+        """Display only: lines for these OUT ports hide their value (the CPU's out_log is untouched)."""
+        ports = frozenset(ports)
+        if ports == self._concealed:
+            return
+        self._concealed = ports
+        self.log.setPlainText("\n".join(m if p in ports and m else t for t, p, m in self._entries))
+        self.log.moveCursor(self.log.textCursor().MoveOperation.End)
 
 
 # ------------------------------------------------------------------- explain
@@ -709,6 +740,7 @@ class ExplainPanel(QScrollArea):
         super().__init__(parent)
         self.machine = None
         self._active = False
+        self.concealed = False  # display only: do not show port values (Experiment 1, before the prediction)
         self.setWidgetResizable(True)
         body = QWidget()
         lay = QVBoxLayout(body)
@@ -806,10 +838,15 @@ class ExplainPanel(QScrollArea):
             self.next.setText("<p><i>No program is loaded.</i> Press <b>Assemble</b> (F7) or <b>Step</b> (F11).</p>")
             return
         from ..core.explain import explain_next
-        self.next.setText(explain_next(self.machine.cpu).html(hide_outcome=self.predict.isChecked()))
+        ex = explain_next(self.machine.cpu)
+        if self.concealed and ex.title.split()[0] in ("IN", "OUT"):
+            ex.details = ["Port values are hidden until you predict (Experiment 1)."]
+            ex.outcomes = []
+        self.next.setText(ex.html(hide_outcome=self.predict.isChecked()))
 
     def clear_last(self, text: str = ""):
         self.last.setText(text or "<p><i>Nothing has run yet.</i></p>")
+        self.table.setRowCount(0)
         self.table.hide()
         self.notes.setText("")
 
@@ -881,17 +918,30 @@ class TracePanel(QWidget):
         lay.addWidget(self.table)
         self._shown = 0
         self._first = 0
+        self.concealed = False
 
     def set_recording(self, on: bool):
         self.record.blockSignals(True)
         self.record.setChecked(on)
         self.record.blockSignals(False)
 
+    def set_concealed(self, on: bool):
+        """Display only: hide the recorded rows (they show A and the I/O effects) until the student predicts."""
+        if on != self.concealed:
+            self.concealed = on
+            self._first = -1  # forces a rebuild on the next refresh
+            self.refresh()
+
     def refresh(self, machine=None):
         m = machine or getattr(self, "machine", None)
         if m is None:
             return
         self.machine = m
+        if self.concealed:
+            self.table.setRowCount(0)
+            self._shown = 0
+            self.info.setText("Hidden until you predict (Experiment 1)")
+            return
         rows = m.trace
         n = len(rows)
         start = max(0, n - self.MAX_ROWS)

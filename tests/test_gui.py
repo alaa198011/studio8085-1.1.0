@@ -13,9 +13,14 @@ from PySide6.QtWidgets import QApplication
 def app(tmp_path_factory):
     QApplication.setOrganizationName("S85test")
     QApplication.setApplicationName("S85test")
-    QSettings.setPath(QSettings.Format.NativeFormat, QSettings.Scope.UserScope,
-                      str(tmp_path_factory.mktemp("settings")))
-    a = QApplication.instance() or QApplication([])
+    settings_dir = str(tmp_path_factory.mktemp("settings"))
+    QSettings.setPath(QSettings.Format.NativeFormat, QSettings.Scope.UserScope, settings_dir)
+    # On Windows NativeFormat is the registry and setPath() does not apply to it, so the tests
+    # used to read/clear the real HKCU\Software\S85test key (two runs at once clobbered each other).
+    # INI files in the temp dir keep every run isolated on all platforms.
+    QSettings.setDefaultFormat(QSettings.Format.IniFormat)
+    QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, settings_dir)
+    a =QApplication.instance() or QApplication([])
     yield a
 
 
@@ -305,7 +310,11 @@ def test_beginner_mode_is_the_default_and_hides_advanced_panels(app):
         assert shown == {"registers", "flags", "memory", "explain", "instructions", "problems", "output"}
         assert not w.memory.heat_box.isVisible() and not w.memory.mode.isVisible()
         assert not w.flags.tstates.isVisible()
-        assert not w.origin_edit.isVisible() and not w.a_cursor.isVisible() and not w.speed.isVisible()
+        assert not w.a_cursor.isVisible() and not w.speed.isVisible()
+        # "Store code at" is in both modes since 1.1.0 (RELEASE_NOTES, USER_GUIDE): not an
+        # Advanced-only item, and actually on screen (not behind the toolbar's overflow chevron)
+        assert not any(w.tb_extra.widgetForAction(a) is w.origin_edit for a in w._advanced_actions)
+        assert _on_screen(w, w.origin_edit) and _on_screen(w, w.mode_combo)
         assert w.tb_run.toolButtonStyle() == Qt.ToolButtonStyle.ToolButtonTextBesideIcon
         assert w.a_run.iconText() == "Run" and w.a_into.iconText() == "Step"
     finally:
@@ -989,6 +998,419 @@ def test_code_address_box_is_visible_in_both_modes(win, app):
         b.editor.document().setModified(False)
         b.close()
         app.processEvents()
+
+
+def _on_screen(window, widget) -> bool:
+    """Visible (not hidden in a toolbar's overflow menu) and entirely inside the window."""
+    from PySide6.QtCore import QPoint, QRect
+    r = QRect(widget.mapTo(window, QPoint(0, 0)), widget.size())
+    return widget.isVisible() and not widget.visibleRegion().isEmpty() and window.rect().contains(r)
+
+
+@pytest.mark.parametrize("mode", ["beginner", "advanced"])
+@pytest.mark.parametrize("size", [(800, 600), (900, 600), (1024, 600), (1280, 720), (1366, 768)])
+def test_code_address_box_fits_on_narrow_windows(app, mode, size):
+    """Regression: in Beginner mode the wide Run toolbar pushed "Store code at" (and the Mode box)
+    behind the Tools toolbar's overflow chevron on narrow windows; the Tools toolbar now wraps."""
+    w = make_window(app, mode)
+    try:
+        w.resize(*size)
+        w.show()
+        for _ in range(3):
+            app.processEvents()
+        assert w.mode == mode
+        assert (w.width(), w.height()) == size  # the window did not grow past the requested size
+        assert _on_screen(w, w.origin_edit), (size, mode, w.size())
+        assert _on_screen(w, w.mode_combo), (size, mode, w.size())
+        if not w.toolBarBreak(w.tb_extra):  # one row only when everything really fits
+            assert sum(tb.sizeHint().width() for tb in w._toolbars_in_row()) <= w.width()
+        w.resize(1900, w.height())  # wide again: back to a single toolbar row
+        app.processEvents()
+        assert not w.toolBarBreak(w.tb_extra) and _on_screen(w, w.origin_edit)
+    finally:
+        w.editor.document().setModified(False)
+        w.close()
+        app.processEvents()
+
+
+@pytest.mark.parametrize("mode", ["beginner", "advanced"])
+def test_window_fits_small_screens(app, mode):
+    """Regression: rigid panel minimums (heatmap, flag buttons, interrupt pins...) added up to a minimum
+    window of about 820 x 900 px in Advanced mode, taller than a 1280 x 720 / 1366 x 768 screen."""
+    w = make_window(app, mode)
+    try:
+        w.resize(1400, 900)
+        w.show()
+        for _ in range(3):
+            app.processEvents()
+        assert w.mode == mode
+        m = w.minimumSizeHint()
+        assert m.width() <= 1024 and m.height() <= 600, m  # also fits 1024 x 600 netbooks
+        w.resize(1280, 680)  # 1280 x 720 minus the taskbar
+        for _ in range(3):
+            app.processEvents()
+        assert (w.width(), w.height()) == (1280, 680)
+        shown = {k for k, d in w.docks.items() if d.isVisible()}
+        assert shown == ({"registers", "flags", "memory", "explain", "instructions", "problems", "output"}
+                         if mode == "beginner" else set(w.docks))  # every panel is still there
+        front = [k for k in shown if not w.docks[k].visibleRegion().isEmpty()]  # not behind another tab
+        assert {"registers", "flags", "memory", "problems"} <= set(front)
+        for k in front:
+            assert w.rect().contains(w.docks[k].geometry()), k
+    finally:
+        w.editor.document().setModified(False)
+        w.close()
+        app.processEvents()
+
+
+def _settle(app, n=5):
+    for _ in range(n):
+        app.processEvents()
+
+
+def test_beginner_memory_panel_is_not_squeezed_on_a_720_screen(app):
+    """Regression (visual QA): with the panels in scroll areas the hex table lost its last column and the
+    detail line on a 1280 x 720 window although they fit; docks now get their natural minimum first."""
+    w = make_window(app, "beginner")
+    try:
+        w.resize(1280, 720)
+        w.show()
+        _settle(app)
+        holder = w.docks["memory"].widget()
+        assert not holder.verticalScrollBar().isVisible() and not holder.horizontalScrollBar().isVisible()
+        assert _on_screen(w, w.memory.detail)
+        # the panel fills the dock exactly: nothing of it is cut off by the scroll area (whether column F
+        # fits depends on the monospace font's width, as before this change)
+        assert w.memory.size() == holder.viewport().size()
+        t = w.memory.table
+        assert t.height() >= t.horizontalHeader().height() + t.verticalHeader().defaultSectionSize()
+        assert not w.docks["flags"].widget().verticalScrollBar().isVisible()
+    finally:
+        w.editor.document().setModified(False)
+        w.close()
+        _settle(app, 2)
+
+
+_MEMORY_COLUMNS_CHECK = r"""
+def memory_columns_unreachable(w, app):
+    # Columns 0-F and ASCII of the hex table that cannot be brought fully into view by scrolling.
+    # For each column: scroll the table to it (and the dock's own scroll area, if the panel is
+    # squeezed); the cell of row 0 must then lie entirely inside the on-screen part of the viewport.
+    from PySide6.QtCore import QPoint, QRect
+    from PySide6.QtGui import QRegion
+    from PySide6.QtWidgets import QAbstractItemView
+    t = w.memory.table
+    holder = w.docks["memory"].widget()
+    w.docks["memory"].raise_()  # on a narrow window the docks share one tabbed column: bring this tab to the front
+    app.processEvents()
+    bad = []
+    # a column the user cannot see at first must be reachable with a visible scroll bar (scrollTo
+    # alone also works with ScrollBarAlwaysOff, which a mouse user could not scroll)
+    t.horizontalScrollBar().setValue(0)
+    app.processEvents()
+    vp_rect = QRect(QPoint(0, 0), t.viewport().size())
+    if not all(vp_rect.contains(t.visualRect(t.model().index(0, c))) for c in range(17)):
+        if not t.horizontalScrollBar().isVisible():
+            bad.append(("table needs horizontal scrolling but shows no scroll bar",))
+    if hasattr(holder, "ensureVisible") and holder.widget() is not None:
+        if holder.widget().width() > holder.viewport().width() and not holder.horizontalScrollBar().isVisible():
+            bad.append(("memory dock is cut off horizontally without a scroll bar",))
+        if holder.widget().height() > holder.viewport().height() and not holder.verticalScrollBar().isVisible():
+            bad.append(("memory dock is cut off vertically without a scroll bar",))
+    for col in range(17):
+        idx = t.model().index(0, col)
+        t.scrollTo(idx, QAbstractItemView.ScrollHint.EnsureVisible)
+        for _ in range(2):
+            app.processEvents()
+        r = t.visualRect(idx)
+        if hasattr(holder, "ensureVisible") and holder.widget() is not None:  # the dock's scroll area
+            c = t.viewport().mapTo(holder.widget(), r.center())
+            holder.ensureVisible(c.x(), c.y(), r.width() // 2 + 2, r.height() // 2 + 2)
+            for _ in range(2):
+                app.processEvents()
+            r = t.visualRect(idx)
+        vp = t.viewport()
+        inside = QRect(QPoint(0, 0), vp.size()).contains(r)
+        shown = (vp.visibleRegion() & QRegion(r)) == QRegion(r)
+        if r.isEmpty() or not inside or not shown:
+            bad.append((col, r.x(), r.width(), vp.width(), t.horizontalScrollBar().isVisible()))
+    return bad
+"""
+exec(_MEMORY_COLUMNS_CHECK)
+
+
+@pytest.mark.parametrize("mode", ["beginner", "advanced"])
+@pytest.mark.parametrize("size", [(1024, 600), (1280, 720), (1366, 768), (1920, 1000)])
+def test_every_memory_column_can_be_scrolled_into_view(app, mode, size):
+    """Columns 0-F and the ASCII column of the hex table must each be reachable: fully visible, or
+    brought fully into view by scrolling (regression: the window-size work must not cut a column off)."""
+    w = make_window(app, mode)
+    try:
+        w.resize(*size)
+        w.show()
+        _settle(app)
+        assert memory_columns_unreachable(w, app) == [], (mode, size)
+    finally:
+        w.editor.document().setModified(False)
+        w.close()
+        _settle(app, 2)
+
+
+@pytest.mark.parametrize("mode", ["beginner", "advanced"])
+@pytest.mark.parametrize("size", [(1024, 600), (1280, 720), (1366, 768)])
+def test_every_memory_column_can_be_scrolled_into_view_with_a_large_interface_font(app, mode, size):
+    """Same check with a 14 pt interface font (bigger rows and headers, as on some real screens)."""
+    w = make_window(app, mode)
+    try:
+        w.resize(*size)
+        w.show()
+        _set_ui_font(w, 14)
+        _settle(app)
+        assert memory_columns_unreachable(w, app) == [], (mode, size)
+    finally:
+        _set_ui_font(w, 0)
+        w.editor.document().setModified(False)
+        w.close()
+        _settle(app, 2)
+
+
+_HIDPI_MEMORY_PROBE = r"""
+import sys, tempfile
+sys.path.insert(0, sys.argv[1])
+from studio8085.app import use_system_fonts_offscreen
+use_system_fonts_offscreen()
+from PySide6.QtCore import QSettings
+from PySide6.QtWidgets import QApplication
+QApplication.setOrganizationName("S85hidpimem"); QApplication.setApplicationName("S85hidpimem")
+QSettings.setDefaultFormat(QSettings.Format.IniFormat)
+QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, tempfile.mkdtemp())
+app = QApplication([])
+QSettings().setValue("mode", sys.argv[2])
+from studio8085.ui.mainwindow import MainWindow
+w = MainWindow(); w.resize(int(sys.argv[3]), int(sys.argv[4])); w.show()
+for _ in range(5):
+    app.processEvents()
+""" + _MEMORY_COLUMNS_CHECK + r"""
+bad = memory_columns_unreachable(w, app)
+print("dpr", w.devicePixelRatio(), "mode", w.mode, "unreachable", bad)
+w.editor.document().setModified(False)
+sys.exit(1 if bad or w.mode != sys.argv[2] else 0)
+"""
+
+
+@pytest.mark.parametrize("mode", ["beginner", "advanced"])
+@pytest.mark.parametrize("phys", [(1366, 768), (1920, 1080)])
+def test_every_memory_column_can_be_scrolled_into_view_at_150_percent(mode, phys):
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+    src = str(Path(__file__).resolve().parents[1] / "src")
+    env = dict(os.environ, QT_SCALE_FACTOR="1.5", QT_QPA_PLATFORM=os.environ.get("QT_QPA_PLATFORM", "offscreen"))
+    w, h = round(phys[0] / 1.5), round(phys[1] / 1.5)
+    r = subprocess.run([sys.executable, "-c", _HIDPI_MEMORY_PROBE, src, mode, str(w), str(h)],
+                       env=env, capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "dpr 1.5" in r.stdout, r.stdout
+
+
+@pytest.mark.parametrize("mode", ["beginner", "advanced"])
+@pytest.mark.parametrize("size", [(800, 600), (960, 540), (1280, 720)])
+def test_editor_keeps_a_usable_share_of_narrow_windows(app, mode, size):
+    """Regression (visual QA): fixed side-dock widths left the editor about 60 px wide on small windows."""
+    w = make_window(app, mode)
+    try:
+        w.resize(*size)
+        w.show()
+        _settle(app)
+        assert w.centralWidget().width() >= 0.22 * w.width(), (w.centralWidget().width(), w.width())
+    finally:
+        w.editor.document().setModified(False)
+        w.close()
+        _settle(app, 2)
+
+
+@pytest.mark.parametrize("mode", ["beginner", "advanced"])
+@pytest.mark.parametrize("width", [460, 560, 660])
+def test_mode_box_never_goes_behind_the_chevron(app, mode, width):
+    """Regression (Linux CI, 200 %): on a very narrow window even the Tools row of its own overflowed and
+    hid the Mode box. The captions are dropped first, and the window is never narrower than that row."""
+    w = make_window(app, mode)
+    try:
+        w.resize(width, 600)
+        w.show()
+        _settle(app)
+        assert _on_screen(w, w.origin_edit) and _on_screen(w, w.mode_combo), (mode, width, w.width())
+        assert w.minimumWidth() <= 800  # still fits an 800 x 600 screen
+        assert w.mode_combo.accessibleName() == "Mode" and w.speed.accessibleName() == "Speed"
+        w.resize(1900, 700)
+        _settle(app)
+        assert all(a.isVisible() for a, _l, adv in w._compact_labels if not (adv and mode == "beginner"))
+    finally:
+        w.editor.document().setModified(False)
+        w.close()
+        _settle(app, 2)
+
+
+def test_heatmap_minimum_still_draws_whole_squares(app):
+    from studio8085.ui.memory import HeatmapWidget
+    h = HeatmapWidget()
+    m = h.minimumSize()
+    assert m.width() <= 240 and m.height() <= 220
+    h.resize(m)
+    r = h._rect()
+    assert r.width() == r.height() and r.width() // HeatmapWidget.GRID >= 3
+    assert r.right() <= h.width() and r.bottom() <= h.height()
+
+
+def test_switching_modes_many_times_keeps_size_and_panels(app):
+    w = make_window(app, "advanced")
+    try:
+        w.resize(1366, 768)
+        w.show()
+        _settle(app)
+        seen = {}
+        for i in range(10):
+            w._set_mode("beginner" if i % 2 == 0 else "advanced")
+            _settle(app, 3)
+            assert (w.width(), w.height()) == (1366, 768)
+            docks = frozenset(k for k, d in w.docks.items() if d.isVisible())
+            assert seen.setdefault(w.mode, docks) == docks  # no panel lost or added on later round trips
+            assert _on_screen(w, w.origin_edit) and _on_screen(w, w.mode_combo)
+        assert seen["advanced"] == set(w.docks) and len(seen["beginner"]) == 7
+    finally:
+        w.editor.document().setModified(False)
+        w.close()
+        _settle(app, 2)
+
+
+def test_dock_panels_keep_their_widgets_and_focus(win, app):
+    """The scroll areas that let docks shrink are transparent wrappers: same panel, no extra tab stop."""
+    from PySide6.QtWidgets import QAbstractScrollArea
+    from studio8085.ui.mainwindow import DockScroll
+    panels = {"memory": win.memory, "flags": win.flags, "io": win.io, "trace": win.trace,
+              "interrupts": win.interrupts, "instructions": win.instructions}
+    for k, panel in panels.items():
+        holder = win.docks[k].widget()
+        assert isinstance(holder, DockScroll) and holder.widget() is panel, k
+        assert holder.focusPolicy() == Qt.FocusPolicy.NoFocus
+    for k, panel in (("registers", win.registers), ("explain", win.explain)):  # these already scroll
+        assert isinstance(panel, QAbstractScrollArea) and win.docks[k].widget() is panel, k
+
+
+def test_saved_layout_is_restored_and_clamped_to_the_screen(app):
+    from PySide6.QtCore import QByteArray, QSettings
+    from studio8085.ui.mainwindow import MainWindow
+    w = make_window(app, "advanced")
+    try:
+        w.resize(1200, 700)
+        w.show()
+        app.processEvents()
+        w.docks["io"].raise_()
+        w.docks["trace"].hide()
+        app.processEvents()
+        state = w.saveState()
+        w.prefs.q.setValue("window/state", state)
+        w.setGeometry(0, 0, 4000, 3000)  # saved on a much bigger screen
+        w.prefs.q.setValue("window/geometry", w.saveGeometry())
+    finally:
+        w.editor.document().setModified(False)
+        w.close()
+        app.processEvents()
+    w2 = MainWindow()  # settings kept: a new session restores the layout
+    try:
+        w2.show()
+        for _ in range(3):
+            app.processEvents()
+        assert w2._layout_restored
+        assert not w2.docks["trace"].isVisible() and w2.docks["io"].isVisible()
+        assert isinstance(QSettings().value("window/state"), QByteArray)
+        avail = w2.screen().availableGeometry()
+        assert w2.width() <= avail.width() and w2.height() <= avail.height(), (w2.size(), avail)
+        assert avail.intersects(w2.frameGeometry())
+        assert _on_screen(w2, w2.origin_edit) and _on_screen(w2, w2.mode_combo)
+    finally:
+        w2.editor.document().setModified(False)
+        w2.close()
+        app.processEvents()
+        QSettings().clear()
+
+
+def test_code_address_box_fits_with_a_large_interface_font(win, app):
+    win._set_mode("beginner")
+    win.resize(900, 700)
+    _set_ui_font(win, 16)
+    try:
+        for _ in range(3):
+            app.processEvents()
+        assert _on_screen(win, win.origin_edit) and _on_screen(win, win.mode_combo)
+    finally:
+        _set_ui_font(win, 0)
+
+
+_HIDPI_PROBE = r"""
+import sys, tempfile
+sys.path.insert(0, sys.argv[1])
+from studio8085.app import use_system_fonts_offscreen
+use_system_fonts_offscreen()
+from PySide6.QtCore import QPoint, QRect, QSettings
+from PySide6.QtWidgets import QApplication
+QApplication.setOrganizationName("S85hidpi"); QApplication.setApplicationName("S85hidpi")
+QSettings.setDefaultFormat(QSettings.Format.IniFormat)
+QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, tempfile.mkdtemp())
+app = QApplication([])
+QSettings().setValue("mode", sys.argv[2])
+from studio8085.ui.mainwindow import MainWindow
+w = MainWindow(); w.resize(int(sys.argv[3]), int(sys.argv[4])); w.show()
+for _ in range(3):
+    app.processEvents()
+ok = []
+for x in (w.origin_edit, w.mode_combo):
+    r = QRect(x.mapTo(w, QPoint(0, 0)), x.size())
+    ok.append(x.isVisible() and not x.visibleRegion().isEmpty() and w.rect().contains(r))
+print("dpr", w.devicePixelRatio(), "mode", w.mode, "size", w.width(), w.height(), "ok", ok)
+w.editor.document().setModified(False)
+sys.exit(0 if all(ok) and w.mode == sys.argv[2] else 1)
+"""
+
+
+@pytest.mark.parametrize("mode", ["beginner", "advanced"])
+@pytest.mark.parametrize("scale", ["1.5", "2"])
+def test_code_address_box_fits_at_high_dpi(mode, scale):
+    """A 1280x720 screen at 150 % / 200 % scaling: a separate process, since the scale factor is fixed
+    when the QApplication starts."""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+    src = str(Path(__file__).resolve().parents[1] / "src")
+    env = dict(os.environ, QT_SCALE_FACTOR=scale, QT_QPA_PLATFORM=os.environ.get("QT_QPA_PLATFORM", "offscreen"))
+    w, h = round(1280 / float(scale)), round(720 / float(scale))
+    r = subprocess.run([sys.executable, "-c", _HIDPI_PROBE, src, mode, str(w), str(h)],
+                       env=env, capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert f"dpr {float(scale)}" in r.stdout, r.stdout
+
+
+def test_the_app_keeps_native_settings_outside_the_tests():
+    """The GUI tests store settings as INI files in a temp dir; the app itself must keep using the
+    platform's native store (the registry on Windows), so it must not change the default format."""
+    import subprocess
+    import sys
+    from pathlib import Path
+    src = str(Path(__file__).resolve().parents[1] / "src")
+    code = """
+import sys
+sys.path.insert(0, sys.argv[1])
+from PySide6.QtCore import QSettings
+from PySide6.QtWidgets import QApplication
+app = QApplication([])
+import studio8085.app, studio8085.ui.mainwindow
+from studio8085.ui.settings import Prefs
+print(Prefs().q.format() == QSettings.Format.NativeFormat)
+"""
+    r = subprocess.run([sys.executable, "-c", code, src], capture_output=True, text=True, timeout=120)
+    assert r.stdout.strip().endswith("True"), r.stdout + r.stderr
 
 
 def test_changing_the_code_address_moves_the_program_at_the_next_run(win, app):

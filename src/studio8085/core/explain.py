@@ -275,7 +275,7 @@ def explain_instruction(ins: Instr, raw: bytes, cpu=None) -> Explanation:
     elif mn == "JMP":
         summary = f"Jumps to {hx(imm, 4)}: the next instruction executed is the one there."
     elif mn == "CALL":
-        summary = (f"Calls the subroutine at {hx(imm, 4)}: pushes the return address ({hx(cpu.pc + 2 if cpu else 0, 4)}) "
+        summary = (f"Calls the subroutine at {hx(imm, 4)}: pushes the return address ({hx((cpu.pc + ins.length) & 0xFFFF if cpu else 0, 4)}) "
                    "onto the stack, then jumps.") if cpu else f"Calls the subroutine at {hx(imm, 4)}."
     elif mn == "RET":
         summary = "Returns from a subroutine: pops the return address from the stack into PC."

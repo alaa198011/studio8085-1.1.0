@@ -20,6 +20,8 @@ DEFAULTS = {
     # Virtual 8085 Trainer Kit (Phase 1). Ports are virtual teaching assignments, not real kit addresses.
     "trainer_enabled": True, "trainer_switch_port": 0x00, "trainer_led_port": 0x01, "trainer_seg_port": 0x02,
     "trainer_seg_mode": "raw",
+    # Interactive CPU Architecture (Phase 2). cpu_reduce_motion: auto (follow the OS) until the user chooses.
+    "cpu_explain": True, "cpu_animate": True, "cpu_reduce_motion": "auto", "cpu_decimal": False, "cpu_speed": 1.0,
 }
 
 

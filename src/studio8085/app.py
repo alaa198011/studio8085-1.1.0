@@ -56,6 +56,8 @@ def selftest() -> int:
     detail = f"{why} HL={w.machine.cpu.hl}"
     if ok:  # the Virtual 8085 Trainer Kit: switches -> IN -> A -> OUT -> LEDs, then disconnect
         ok, detail = _selftest_trainer(w)
+    if ok:  # Phase 2: the Interactive CPU Architecture panel shows the same IN -> A -> OUT -> LEDs chain
+        ok, detail = _selftest_cpuview(w)
     QSettings().clear()
     print("selftest ok" if ok else f"selftest FAILED: {detail}")
     w.editor.document().setModified(False)
@@ -80,6 +82,28 @@ def _selftest_trainer(w) -> tuple[bool, str]:
     kit.set_enabled(False)
     ok = ok and (m.cpu.on_in, m.cpu.on_out) == hooks
     return ok, f"trainer kit: {why} A={m.cpu.a:02X}h LEDs={kit.leds.value:02X}h shown={leds:02X}h"
+
+
+def _selftest_cpuview(w) -> tuple[bool, str]:
+    """Open the CPU Architecture panel, step IN and OUT of Lab C, and check what it recorded and drew."""
+    w.kit.set_enabled(True)
+    w.kit.set_switches(0x5A)
+    w.show_cpu_view()
+    w.cpu_panel.apply_settings(explain=True, animate=False, reduce_motion=True)
+    w.load_visual_lab("C")
+    w.cmd_step("into")
+    rec_in = w.cpu_panel._rec
+    w.cmd_step("into")
+    rec_out = w.cpu_panel._rec
+    p = w.cpu_panel
+    ok = (rec_in is not None and rec_out is not None and rec_in.text.startswith("IN") and rec_out.text.startswith("OUT")
+          and rec_in.post.reg("A") == 0x5A and w.kit.leds.value == 0x5A and p.nodes["PORT_OUT"].leds == 0x5A
+          and [(f.flow.src, f.flow.dst) for f in p.flow_items if f.flow.phase == 2] == [("A", "PORT_OUT")]
+          and not p.grab().isNull())
+    w.cpu_dock.hide()
+    w.kit.set_enabled(False)
+    return ok, (f"cpu architecture panel: IN={rec_in.text if rec_in else None} OUT={rec_out.text if rec_out else None} "
+                f"LEDs={w.kit.leds.value:02X}h")
 
 
 def main(argv: list[str] | None = None) -> int:

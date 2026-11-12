@@ -124,7 +124,7 @@ class RegistersPanel(QTableWidget):
             if name in self.concealed:
                 hexi.setText("??")
                 self.item(r, 2).setText("??")
-                self.item(r, 3).setText("????????" if bits == 8 else "")
+                self.item(r, 3).setText("????????" if kind in ("r8",) else "")
                 hexi.setFlags(hexi.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 for c in (1, 2, 3):
                     self.item(r, c).setForeground(QBrush(text))
@@ -174,6 +174,8 @@ class FlagsPanel(QWidget):
         self.machine = None
         self.clock_mhz = 3.0
         self._busy = False
+        self.concealed = False  # display only: flags shown as ? (Experiment 1, before the prediction)
+        self._tips: dict[str, str] = {}
         row = QHBoxLayout()
         row.setSpacing(6)
         self.buttons = {}
@@ -187,6 +189,7 @@ class FlagsPanel(QWidget):
                           "p": "Parity: result has an even number of 1 bits",
                           "cy": "Carry / borrow"}[attr] + "\n(click to toggle)")
             b.toggled.connect(lambda on, a=attr: self._toggled(a, on))
+            self._tips[attr] = b.toolTip()
             row.addWidget(b)
             self.buttons[attr] = b
         self.fbyte = QLabel()
@@ -243,16 +246,32 @@ class FlagsPanel(QWidget):
         self.state.style().unpolish(self.state)
         self.state.style().polish(self.state)
 
+    def set_concealed(self, on: bool):
+        """Display only: show every flag as ? (a flag pattern left by an earlier run can betray the answer)."""
+        if bool(on) != self.concealed:
+            self.concealed = bool(on)
+            self.refresh()
+
     def refresh(self):
         if not self.machine:
             return
         cpu = self.machine.cpu
         self._busy = True
-        for _, attr in self.NAMES:
-            self.buttons[attr].setChecked(bool(getattr(cpu, attr)))
+        for label, attr in self.NAMES:
+            b = self.buttons[attr]
+            if self.concealed:
+                b.setChecked(False)
+                b.setText("?")
+                b.setEnabled(False)
+                b.setToolTip("Hidden until you predict (Experiment 1)")
+            else:
+                b.setChecked(bool(getattr(cpu, attr)))
+                b.setText(label)
+                b.setEnabled(True)
+                b.setToolTip(self._tips[attr])
         self._busy = False
         f = cpu.f
-        self.fbyte.setText(f"F = {f:02X}h   {f >> 4:04b} {f & 15:04b}b")
+        self.fbyte.setText("F = ??h   ???? ????b" if self.concealed else f"F = {f:02X}h   {f >> 4:04b} {f & 15:04b}b")
         self.instr.setText(f"{cpu.icount:,}")
         self.tstates.setText(f"{cpu.tstates:,}")
         us = cpu.tstates / self.clock_mhz

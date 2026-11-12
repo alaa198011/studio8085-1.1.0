@@ -112,13 +112,15 @@ def test_a_is_revealed_by_help_and_by_ending_the_experiment(app, how):
         close(w, app)
 
 
-def test_other_registers_stay_visible_while_a_is_masked(app):
+def test_pc_and_sp_stay_visible_while_the_general_registers_are_masked(app):
     w = prepare(app, "advanced")
     try:
         w.machine.cpu.regs[0] = 0x12  # B
         w.start_experiment()
-        _settle(app)
-        assert w.registers.item(1, 0).text() == "B" and w.registers.item(1, 1).text() == "12"
+        _settle(app, 5)
+        assert w.registers.item(1, 0).text() == "B" and w.registers.item(1, 1).text() == "??"
+        names = {w.registers.item(r, 0).text(): w.registers.item(r, 1).text() for r in range(w.registers.rowCount())}
+        assert names["PC"] != "??" and names["SP"] != "??"
     finally:
         close(w, app)
 

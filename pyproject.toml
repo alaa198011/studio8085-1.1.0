@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "studio8085"
-version = "1.1.0"
+version = "1.2.0"
 description = "Assembler, simulator and debugger for the Intel 8085 microprocessor, with a modern Qt interface"
 readme = "README.md"
 license = { text = "MIT" }

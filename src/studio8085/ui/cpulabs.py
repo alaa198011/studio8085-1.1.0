@@ -5,8 +5,8 @@ from __future__ import annotations
 
 from html import escape
 
-from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QComboBox, QHBoxLayout, QPushButton, QTextBrowser, QVBoxLayout, QWidget
+from PySide6.QtCore import QSize, Signal
+from PySide6.QtWidgets import QBoxLayout, QComboBox, QPushButton, QTextBrowser, QVBoxLayout, QWidget
 
 from ..core.lab_content import LABS, feedback
 from ..core.visual import CpuState, KitView
@@ -28,18 +28,40 @@ class LabGuidePanel(QWidget):
         self.check_btn.setToolTip("Compare the CPU's current state with what the lab expects")
         self.view = QTextBrowser()
         self.view.setAccessibleName("Lab guide")
-        row = QHBoxLayout()
-        row.addWidget(self.combo, 1)
+        # two short rows (the lab list, then the buttons) and a combo that may be narrower than its longest title,
+        # so the guide never forces the CPU panel wider than a small dock
+        self.combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.combo.setMinimumContentsLength(12)
+        # the two buttons sit side by side when the panel is wide enough and one above the other when it is narrow
+        self._btn_row = row = QBoxLayout(QBoxLayout.Direction.TopToBottom)
         row.addWidget(self.load_btn)
         row.addWidget(self.check_btn)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(4, 4, 4, 4)
+        lay.addWidget(self.combo)
         lay.addLayout(row)
         lay.addWidget(self.view, 1)
         self.combo.currentIndexChanged.connect(lambda _i: self.show_lab())
         self.load_btn.clicked.connect(lambda: self.load_requested.emit(self.key))
         self.check_btn.clicked.connect(lambda: self.check_requested.emit(self.key))
         self.show_lab()
+
+    def minimumSizeHint(self) -> QSize:
+        """Narrow enough for a small dock: the stacked layout (buttons one above the other) is the minimum."""
+        sh = super().minimumSizeHint()
+        m = self.layout().contentsMargins()
+        w = max(self.combo.minimumSizeHint().width(), self.load_btn.sizeHint().width(),
+                self.check_btn.sizeHint().width()) + m.left() + m.right()
+        return QSize(w, sh.height())
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        m = self.layout().contentsMargins()
+        need = (self.load_btn.sizeHint().width() + self.check_btn.sizeHint().width()
+                + self._btn_row.spacing() + 8 + m.left() + m.right())
+        want = QBoxLayout.Direction.LeftToRight if self.width() >= need else QBoxLayout.Direction.TopToBottom
+        if self._btn_row.direction() != want:
+            self._btn_row.setDirection(want)
 
     @property
     def key(self) -> str:

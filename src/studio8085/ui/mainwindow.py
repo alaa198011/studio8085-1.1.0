@@ -92,6 +92,11 @@ class FindBar(QFrame):
         self.editor.highlight_matches(self.text.text(), self.case.isChecked())
 
 
+# registers (and pairs) whose value is shown as ?? in the Registers dock while Experiment 1 hides the answer;
+# PC and SP stay visible. Every placeholder is the same, so it does not say which register holds what.
+CONCEALED_REGISTERS = ("A", "B", "C", "D", "E", "H", "L", "BC", "DE", "HL")
+
+
 class DockScroll(QScrollArea):
     """Holds a dock panel so the dock can be made smaller than the panel's minimum size.
 
@@ -1390,7 +1395,9 @@ class MainWindow(QMainWindow):
         self.io.set_concealed(ports)
         self.output.set_concealed(ports)
         self.trace.set_concealed(on)
-        self.registers.set_concealed(("A",) if on else ())  # a value left by an earlier run would give the answer away
+        # a copy of the answer left by an earlier run (A, or B/C/D/E/H/L/pairs after MOV B,A ...) would give it away
+        self.registers.set_concealed(CONCEALED_REGISTERS if on else ())
+        self.flags.set_concealed(on)
         self.explain.concealed = on
         if self.cpu_panel is not None:
             self.cpu_panel.set_concealed(on, tuple(ports))
@@ -1608,6 +1615,7 @@ class MainWindow(QMainWindow):
         if panel is None or d is None:
             return
         if on and self.cpu_big is None:
+            self._cpu_view_state = panel.view_state()  # the docked diagram's zoom and scroll position, put back on restore
             scroll = d.widget()
             scroll.takeWidget()
             self.cpu_big = EnlargedWindow(panel, CPU_TITLE + " - enlarged")
@@ -1631,6 +1639,7 @@ class MainWindow(QMainWindow):
             d.widget().setWidget(panel)
             panel.show()
             panel.mark_enlarged(False)
+            panel.restore_view_state(self._cpu_view_state)
             big.deleteLater()
             self.visual.enabled = d.isVisible()
             panel.setFocus()

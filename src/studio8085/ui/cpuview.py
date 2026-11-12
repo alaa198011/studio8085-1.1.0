@@ -880,7 +880,7 @@ class CpuArchitecturePanel(QWidget):
         self._mv: MemView | None = None
         self._zoom_pref = 0.0  # 0 = fit the panel (persisted "diagram size")
         self.enlarged = False
-        self.setMinimumSize(520, 420)
+        self.setMinimumSize(300, 420)  # the header controls wrap onto more rows when the panel is narrow
 
         self.scene = QGraphicsScene(0, 0, SCENE_W, SCENE_H, self)
         self.view = DiagramView(self.scene)
@@ -967,22 +967,17 @@ class CpuArchitecturePanel(QWidget):
             if keys == "Esc":
                 self._esc_shortcut = sc
                 sc.setEnabled(False)  # Esc only means "back" while enlarged; otherwise it stays free (Find bar)
-        row1 = QHBoxLayout()
-        for w in (self.explain_cb, self.anim_cb, self.reduce_cb, self.dec_cb):
-            row1.addWidget(w)
-        row1.addStretch(1)
-        row1.addWidget(QLabel("Size:"))
-        row1.addWidget(self.size_combo)
-        row2 = QHBoxLayout()
-        row2.addWidget(QLabel("Speed:"))
-        row2.addWidget(self.speed_combo)
-        for w in (self.pause_btn, self.skip_btn, self.replay_btn):
-            row2.addWidget(w)
-        row2.addStretch(1)
-        row2.addWidget(self.zoom_out_btn)
-        row2.addWidget(self.zoom_in_btn)
-        row2.addWidget(self.fit_btn)
-        row2.addWidget(self.max_btn)
+        # The header is two groups of controls: (left items | right items). It is laid out by _reflow_header():
+        # at a normal width that is exactly two rows; in a narrow dock the items wrap onto more rows instead of
+        # being cut off, so every control stays reachable.
+        self._size_lbl, self._speed_lbl = QLabel("Size:"), QLabel("Speed:")
+        self._header_groups = [
+            ([self.explain_cb, self.anim_cb, self.reduce_cb, self.dec_cb], [self._size_lbl, self.size_combo]),
+            ([self._speed_lbl, self.speed_combo, self.pause_btn, self.skip_btn, self.replay_btn],
+             [self.zoom_out_btn, self.zoom_in_btn, self.fit_btn, self.max_btn])]
+        self.header = QVBoxLayout()
+        self.header.setSpacing(4)
+        self._header_sig = None
 
         self.status = QLabel()
         self.status.setWordWrap(True)
@@ -1006,8 +1001,7 @@ class CpuArchitecturePanel(QWidget):
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(6, 6, 6, 6)
-        lay.addLayout(row1)
-        lay.addLayout(row2)
+        lay.addLayout(self.header)
         lay.addWidget(self.split, 1)
         lay.addWidget(self.status)
 
@@ -1018,6 +1012,7 @@ class CpuArchitecturePanel(QWidget):
         self._live_timer.setSingleShot(True)
         self._live_timer.timeout.connect(self._flush_live)
         self.setTabOrder(self.explain_cb, self.anim_cb)
+        self._reflow_header()
         self.set_theme(None)
         self._update_buttons()
         self._show_idle()
@@ -1420,7 +1415,7 @@ class CpuArchitecturePanel(QWidget):
                 continue
             use_post = rec is not None and sub_phase and nid in done_dst
             st = rec.post if use_post else shown
-            masked = self._concealed and nid == "A"
+            masked = self._concealed and nid in REG_ORDER  # A and B..L: a stale copy of the answer may sit in any
             is_changed = rec is not None and nid in changed and (not sub_phase or use_post)
             old = chg_regs.get(nid)
             if rec is not None and nid == "PC" and rec.pc_change:
@@ -1437,14 +1432,15 @@ class CpuArchitecturePanel(QWidget):
         fl_node.set_state(flags_vals=fst.flags if fst is not None else None,
                           flags_changed=frozenset(n for n, _, _ in rec.flag_changes) if rec is not None
                           and (not sub_phase or "FLAGS" in done_dst) else frozenset(),
-                          masked=False)
+                          masked=self._concealed)
         # pairs
         for pid, fr in self.frames.items():
             st = shown
             if sub_phase and rec is not None and (pid in done_dst or set(PAIRS[pid]) & done_dst):
                 st = rec.post
             fr.set_state(role=roles.get(pid, ""), changed=pid in changed and not sub_phase,
-                         value=st.pair(pid) if st is not None else None, masked=False, decimal=self.decimal)
+                         value=st.pair(pid) if st is not None else None, masked=self._concealed,
+                         decimal=self.decimal)
         # IR / interfaces / memory / ports -----------------------------
         hide = self._concealed
         mv = None if hide else self._mv
@@ -1581,6 +1577,27 @@ class CpuArchitecturePanel(QWidget):
         self.view.resetTransform()
         self.view.scale(self._scale, self._scale)
 
+    def view_state(self) -> dict:
+        """The diagram's zoom and scroll position (kept across Enlarge / Restore)."""
+        return {"fit": self._fit, "pref": self._zoom_pref, "scale": self._scale,
+                "h": self.view.horizontalScrollBar().value(), "v": self.view.verticalScrollBar().value()}
+
+    def restore_view_state(self, st: dict):
+        """Put a ``view_state`` back. The scroll ranges only settle after the panel has been re-laid out, so it is
+        applied now and again once the event loop has run."""
+        def apply():
+            if not st["fit"]:
+                self._fit = False
+                self._scale = st["scale"]
+                self.view.resetTransform()
+                self.view.scale(self._scale, self._scale)
+                self.view.horizontalScrollBar().setValue(st["h"])
+                self.view.verticalScrollBar().setValue(st["v"])
+        apply()
+        if not st["fit"]:
+            QTimer.singleShot(0, apply)
+            QTimer.singleShot(80, apply)
+
     def _apply_fit(self):
         vw, vh = self.view.viewport().width(), self.view.viewport().height()
         if vw < 50:
@@ -1593,8 +1610,52 @@ class CpuArchitecturePanel(QWidget):
         self.view.verticalScrollBar().setValue(0)  # a diagram taller than the panel starts at its top
         self.view.horizontalScrollBar().setValue(0)
 
+    def _reflow_header(self):
+        """Wrap the header controls to the panel width (greedy, in reading order). Same widgets, new rows."""
+        avail = max(120, self.width() - 12)
+        sp = 6
+        rows: list[tuple[list, list]] = []
+        for left, right in self._header_groups:
+            cur, w = [], 0
+            for it in left:
+                iw = it.sizeHint().width()
+                if cur and w + sp + iw > avail:
+                    rows.append((cur, []))
+                    cur, w = [], 0
+                cur.append(it)
+                w += iw + (sp if len(cur) > 1 else 0)
+            rw = sum(it.sizeHint().width() for it in right) + sp * (len(right) - 1)
+            if w + sp + rw <= avail:
+                rows.append((cur, right))
+            else:
+                rows.append((cur, []))
+                rows.append(([], right))
+        sig = tuple((tuple(id(x) for x in a), tuple(id(x) for x in b)) for a, b in rows)
+        if sig == self._header_sig:
+            return
+        self._header_sig = sig
+        while self.header.count():  # drop the old rows; the widgets stay children of the panel
+            item = self.header.takeAt(0)
+            lay = item.layout()
+            if lay is not None:
+                while lay.count():
+                    lay.takeAt(0)
+                lay.setParent(None)
+                lay.deleteLater()
+        for a, b in rows:
+            r = QHBoxLayout()
+            for it in a:
+                r.addWidget(it)
+            r.addStretch(1)
+            for it in b:
+                r.addWidget(it)
+            self.header.addLayout(r)
+        self.header.invalidate()
+        self.updateGeometry()
+
     def resizeEvent(self, e):
         super().resizeEvent(e)
+        self._reflow_header()
         if self._fit:
             self._apply_fit()
 

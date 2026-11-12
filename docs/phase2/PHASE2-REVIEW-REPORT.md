@@ -282,3 +282,22 @@ no match; it reappears after the prediction or Help.
 New: `tests/test_phase2_review_fixes.py` (25 test cases). Screenshots re-captured with `tools/phase2_shots.py`; new: `memory_access_STA/LDA/INR_M`,
 `memory_dock_marks_STA/INR_M`, `stack_PSW/POP/CALL/RET`, `stepped_panel_*`, `stepped_docked_800x600/1366x768`, `enlarged_view`, `enlarged_view_labs`,
 `enlarged_view_from_800x600`.
+
+### 17.7 QA fixes (PR #4 QA)
+1. **Answer leak (critical).** The Registers dock was never part of the Experiment 1 masking, so after an earlier run the stale A was shown before the
+   prediction. This was already the case in Phase 1 (the masking list there covered the I/O table, Output, Trace and Explain, not Registers).
+   `_apply_conceal` now also calls `RegistersPanel.set_concealed(("A",))`: A shows `??` / `??` / `????????` and cannot be edited until the student
+   predicts, asks for help or ends the experiment. Display only; the CPU is not touched. Checked and not leaking: Memory dock, Stack, Flags,
+   status bar, I/O Ports, Output, CPU diagram (there is no debugger watch window).
+2. **Ctrl+= / Ctrl+- in the CPU panel.** Root cause: the main window action (Zoom In/Out, window shortcut) and the panel's own shortcut matched the
+   same key, which Qt treats as ambiguous, so neither ran. The main window now owns the keys and dispatches by focus (panel or anything in it:
+   diagram zoom; elsewhere: editor zoom); the enlarged window, which is a separate top-level window, keeps the panel's own shortcuts. Tooltips say
+   "while this panel has the focus". Ctrl++ also zooms in now.
+3. **F11 (and F5/F10/...) while enlarged.** Root cause: the enlarged view is a separate top-level window, so the main window's actions were not
+   active there. The window now lends it the run/step actions (assemble, run, pause, stop, restart, step into/over/out) and takes them back on restore.
+4. **Flow arrow across "Register pair BC".** The tap of B, D and H (and the MOV B,B self-loop) went up through the pair title. The first register of each
+   pair now leaves its box at the left corner and the pair title starts 4 px further right; a test checks every flow and bus tap against all three titles.
+
+Tests: `tests/test_phase2_qa_fixes.py` (18 cases: stale-A sweep over all docks and the diagram, reveal after predict/help/end, key events for
+docked/floating/enlarged, editor zoom still works, F11/F10/F5 enlarged, no arrow through a title). Screenshots re-captured: `enlarged_view*`,
+`experiment1_*`, `lab_A_register_transfer`.

@@ -95,13 +95,23 @@ def _top(node: str) -> float:
     return GEOM[node][1]
 
 
+PAIR_TITLE_X = 28.0  # the pair's title starts this far inside its frame, to the right of the first register's tap
+
+
+def _reg_tap_x(node: str) -> float:
+    """x where a register's line to the data path leaves its box. B, D and H (the first register of a pair) leave
+    near their left corner, so the line passes beside the pair title ("Register pair BC") instead of through it."""
+    x, _, w, _ = GEOM[node]
+    return x + 8 if node in ("B", "D", "H") else x + w / 2
+
+
 def _data_tap(node: str) -> list[QPointF] | None:
     """Points from the node to the 8-bit internal data path, ending ON the bus line."""
     P = QPointF
     if node in ("IR", "A", "ALU", "FLAGS"):
         return [P(_cx(node), _bottom(node)), P(_cx(node), DATA_Y)]
     if node in REG_ORDER[1:]:
-        return [P(_cx(node), _top(node)), P(_cx(node), DATA_Y)]
+        return [P(_reg_tap_x(node), _top(node)), P(_reg_tap_x(node), DATA_Y)]
     if node in PAIRS:
         return [P(_cx(node), _top(node)), P(_cx(node), DATA_Y)]
     if node == "MEM":
@@ -145,6 +155,10 @@ def route(flow: Flow) -> QPainterPath:
     y = ADDR_Y if use_addr else DATA_Y
     if src == dst:
         x, ya, w, _ = GEOM[src]
+        if src in ("B", "D", "H"):  # keep this small loop in the corner, beside the pair title instead of across it
+            path.moveTo(x + 13, ya)
+            path.cubicTo(x + 13, ya - 26, x + 1, ya - 26, x + 1, ya)
+            return path
         path.moveTo(x + w * 0.35, ya)
         path.cubicTo(x + w * 0.35, ya - 22, x + w * 0.65, ya - 22, x + w * 0.65, ya)
         return path
@@ -687,7 +701,7 @@ class PairFrame(QGraphicsObject):
         label = f"{self.nid} = {val}" + (f"  ({self.value})" if self.decimal and self.value is not None and not self.masked else "")
         tag = " ".join(([_ROLE_TAG[self.role]] if self.role else []) + (["Δ"] if self.changed else []))
         bf = fnt(FONT_DETAIL, bold=True)
-        self._t(p, 8, 4, self.rect.width() - 16, 22, NODE_INFO[self.nid][0], bf)
+        self._t(p, PAIR_TITLE_X, 4, self.rect.width() - PAIR_TITLE_X - 8, 22, NODE_INFO[self.nid][0], bf)
         if tag:
             bw = QFontMetricsF(bf).horizontalAdvance(tag)
             self._t(p, self.rect.width() - bw - 10, 4, bw + 4, 22, tag, bf, _AR)
@@ -793,10 +807,20 @@ class EnlargedWindow(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(panel)
         self._released = False
+        self._actions: list = []
+
+    def set_actions(self, actions):
+        """Lend the main window's run/step actions to this separate top-level window, so F5/F10/F11... still work."""
+        for a in actions:
+            self.addAction(a)
+        self._actions = list(actions)
 
     def release(self):
         """Give the panel up (the caller re-parents it) without emitting ``closed``."""
         self._released = True
+        for a in self._actions:
+            self.removeAction(a)
+        self._actions = []
         self.layout().removeWidget(self._panel)
         self._panel.setParent(None)
         self.hide()
@@ -903,11 +927,11 @@ class CpuArchitecturePanel(QWidget):
         self.replay_btn.clicked.connect(self.replay)
         self.zoom_out_btn = QPushButton()
         self.zoom_out_btn.setAccessibleName("Zoom out")
-        self.zoom_out_btn.setToolTip("Zoom out (Ctrl+-, also the - key or Ctrl+wheel)")
+        self.zoom_out_btn.setToolTip("Zoom out (Ctrl+- while this panel has the focus, also the - key or Ctrl+wheel)")
         self.zoom_out_btn.clicked.connect(lambda: self.zoom_by(1 / 1.15))
         self.zoom_in_btn = QPushButton()
         self.zoom_in_btn.setAccessibleName("Zoom in")
-        self.zoom_in_btn.setToolTip("Zoom in (Ctrl+=, also the + key or Ctrl+wheel)")
+        self.zoom_in_btn.setToolTip("Zoom in (Ctrl+= while this panel has the focus, also the + key or Ctrl+wheel)")
         self.zoom_in_btn.clicked.connect(lambda: self.zoom_by(1.15))
         self.fit_btn = QPushButton()
         self.fit_btn.setAccessibleName("Fit the diagram to the panel")
@@ -930,6 +954,7 @@ class CpuArchitecturePanel(QWidget):
             b.setIconSize(QSize(22, 22))
         # keyboard shortcuts work anywhere inside the panel (also when it floats or is enlarged)
         self._shortcuts = []
+        self._zoom_shortcuts = []
         for keys, fn in (("Ctrl+Shift+F", self.toggle_enlarged), ("Ctrl+=", lambda: self.zoom_by(1.15)),
                          ("Ctrl++", lambda: self.zoom_by(1.15)), ("Ctrl+-", lambda: self.zoom_by(1 / 1.15)),
                          ("Ctrl+0", lambda: self.zoom_by(0.0)), ("Esc", self._escape)):
@@ -937,6 +962,11 @@ class CpuArchitecturePanel(QWidget):
             sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
             sc.activated.connect(fn)
             self._shortcuts.append(sc)
+            if keys in ("Ctrl+=", "Ctrl++", "Ctrl+-"):
+                self._zoom_shortcuts.append(sc)
+            if keys == "Esc":
+                self._esc_shortcut = sc
+                sc.setEnabled(False)  # Esc only means "back" while enlarged; otherwise it stays free (Find bar)
         row1 = QHBoxLayout()
         for w in (self.explain_cb, self.anim_cb, self.reduce_cb, self.dec_cb):
             row1.addWidget(w)
@@ -1584,6 +1614,12 @@ class CpuArchitecturePanel(QWidget):
         return self._scale
 
     # --------------------------------------------------------- enlarge
+    def set_zoom_keys(self, on: bool):
+        """Ctrl+= / Ctrl++ / Ctrl+- inside the panel. A host that already owns those keys (the main window, which
+        dispatches them by focus) switches them off so the key is not ambiguous; the enlarged window switches them on."""
+        for sc in self._zoom_shortcuts:
+            sc.setEnabled(bool(on))
+
     def toggle_enlarged(self):
         self.set_enlarged(not self.enlarged)
 
@@ -1595,6 +1631,7 @@ class CpuArchitecturePanel(QWidget):
 
     def mark_enlarged(self, on: bool):
         self.enlarged = bool(on)
+        self._esc_shortcut.setEnabled(self.enlarged)
         self.max_btn.setToolTip(("Back to the normal layout (Esc or Ctrl+Shift+F)" if on else
                                  "Enlarge the CPU Architecture view and the labs to a full window (Ctrl+Shift+F). "
                                  "Press Esc or the same button to go back."))

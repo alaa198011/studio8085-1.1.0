@@ -514,8 +514,12 @@ class MainWindow(QMainWindow):
         self.a_comment = A("Toggle &Comment", lambda: self.editor.toggle_comment(), "Ctrl+/")
         self.a_instr = A("&Instructions", self.show_instructions, "Ctrl+I", "instructions", "text",
                          "Instruction list: click one to insert it (opcodes shown)")
-        self.a_zoom_in = A("Zoom &In", lambda: self.editor.zoom(1), "Ctrl+=")
-        self.a_zoom_out = A("Zoom &Out", lambda: self.editor.zoom(-1), "Ctrl+-")
+        # Ctrl+= / Ctrl+- are focus-aware: the CPU panel zooms its diagram when it (or anything in it) has the
+        # focus, the editor zooms its text everywhere else. One owner per key: the panel's own copies of these
+        # shortcuts are switched off while the panel lives in this window (they would make the key ambiguous).
+        self.a_zoom_in = A("Zoom &In", lambda: self._zoom_key(1), "Ctrl+=")
+        self.a_zoom_in.setShortcuts([QKeySequence("Ctrl+="), QKeySequence("Ctrl++")])
+        self.a_zoom_out = A("Zoom &Out", lambda: self._zoom_key(-1), "Ctrl+-")
 
         self.a_assemble = A("&Assemble", self.cmd_assemble, "F7", "assemble", "text", "Assemble and load the program")
         self.a_run = A("&Run / Continue", self.cmd_run, "F5", "run", "ok", "Run (or continue) the program")
@@ -1378,7 +1382,7 @@ class MainWindow(QMainWindow):
 
     def _apply_conceal(self, on: bool):
         """Experiment 1, before the student has predicted: show the kit's ports as ``??`` in the I/O Ports table,
-        the Output log, the Explain panel and the Trace table. Display only - ``cpu.io``, the switches and the
+        the Output log, the Explain panel, the Trace table and register A in the Registers dock. Display only - ``cpu.io``, the switches and the
         CPU are never touched, and everything is shown again as soon as the student predicts, asks for help or
         ends the experiment."""
         p = self.kit.ports
@@ -1386,6 +1390,7 @@ class MainWindow(QMainWindow):
         self.io.set_concealed(ports)
         self.output.set_concealed(ports)
         self.trace.set_concealed(on)
+        self.registers.set_concealed(("A",) if on else ())  # a value left by an earlier run would give the answer away
         self.explain.concealed = on
         if self.cpu_panel is not None:
             self.cpu_panel.set_concealed(on, tuple(ports))
@@ -1531,6 +1536,7 @@ class MainWindow(QMainWindow):
         if self.cpu_panel is not None:
             return
         self.cpu_panel = CpuArchitecturePanel()
+        self.cpu_panel.set_zoom_keys(False)  # Ctrl+= / Ctrl+- are dispatched by the main window while docked or floating
         self.cpu_panel.set_theme(self.theme)
         self.cpu_panel.labs.load_requested.connect(self.load_visual_lab)
         self.cpu_panel.labs.check_requested.connect(self.check_visual_lab)
@@ -1583,6 +1589,15 @@ class MainWindow(QMainWindow):
         if want > d.width():
             self.resizeDocks([d], [want], Qt.Orientation.Horizontal)
 
+    def _zoom_key(self, direction: int):
+        """Ctrl+= / Ctrl+-: zoom the CPU diagram when the CPU panel has the focus, otherwise the editor text."""
+        fw = QApplication.focusWidget()
+        panel = self.cpu_panel
+        if panel is not None and fw is not None and (fw is panel or panel.isAncestorOf(fw)):
+            panel.zoom_by(1.15 if direction > 0 else 1 / 1.15)
+        else:
+            self.editor.zoom(direction)
+
     def _enlarge_cpu(self, on: bool):
         """Show the CPU Architecture panel (which hosts the labs) in a maximized window, or put it back.
 
@@ -1598,6 +1613,11 @@ class MainWindow(QMainWindow):
             self.cpu_big = EnlargedWindow(panel, CPU_TITLE + " - enlarged")
             self.cpu_big.closed.connect(lambda: self._enlarge_cpu(False))
             self.cpu_big.setStyleSheet(self.styleSheet())
+            # the enlarged window is a separate top-level window: lend it the run/step actions (F5, F10, F11, ...)
+            # so they keep working there; the panel zooms with its own Ctrl+= / Ctrl+- while it is in that window
+            self.cpu_big.set_actions([self.a_assemble, self.a_run, self.a_pause, self.a_stop, self.a_restart,
+                                      self.a_into, self.a_over, self.a_out])
+            panel.set_zoom_keys(True)
             panel.mark_enlarged(True)
             self.cpu_big.showMaximized()
             panel.show()
@@ -1607,6 +1627,7 @@ class MainWindow(QMainWindow):
         elif not on and self.cpu_big is not None:
             big, self.cpu_big = self.cpu_big, None
             big.release()
+            panel.set_zoom_keys(False)
             d.widget().setWidget(panel)
             panel.show()
             panel.mark_enlarged(False)

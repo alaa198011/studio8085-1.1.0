@@ -214,3 +214,71 @@ and `_docked_light`. Remaining note: on an 800x600 window a docked panel is stil
 floating it is better there.
 
 STATUS: READY_FOR_OWNER_REVIEW
+
+## 17. Owner review fixes (PR #3 review by Alaa: RAM cells, text size, stack pointer, enlarge icon)
+
+`cpu.py`, `assembler.py`, `machine.py` and `opcodes.py` are untouched (the guard test passes). All changes are in the visualization model
+(`core/visual.py`), the panel (`ui/cpuview.py`), the Memory view (`ui/memory.py`), the window glue (`ui/mainwindow.py`), the icon set and one
+setting (`cpu_zoom`).
+
+### 17.1 Memory cells used during execution
+**What the recorder really provides.** `StepRecorder` watches the simulator's own per-cell counters (`Memory.rd`, `Memory.wr`) for the addresses an
+instruction can touch (operands, HL for `M`, SP for stack instructions). Therefore:
+* Step Into: every read and write of that instruction is reported when access tracking is on (the default). A write also carries the byte before
+  (`Access.old`); a read carries the byte as it was when read (INR M: reads 3Fh, writes 40h).
+* Tracking off: only writes that change a cell can be proven; **no read is ever reported** (nothing is fabricated).
+* Run / Step Over / Step Out: no per-access record. The panel shows the **recently used** list instead, taken from the simulator's last-access
+  statistics (last 400 instructions, newest first, at most 6 kept, 4 drawn). Limitation: those statistics keep only the *last* access kind per cell, and
+  interrupt entry pushes are not itemised.
+
+**Diagram.** The Memory block at the memory interface now has: "this step" rows (`WRITE 2000h  00h -> 3Fh`, `READ  3000h = 3Fh`; text labels, so
+meaning does not depend on colour), a short recently-used line (`W20FD W20FC ...`), and two strips of five cells (around HL = M, and around the last
+accessed address) with the used cells outlined, filled and prefixed `R`, `W` or `RW`, and `HL` written next to the HL cell.
+**Memory dock.** The same cells are coloured with an `R` / `W` letter in the cell, the tooltip says READ / WRITTEN by the last step, a line above
+the table lists them, and the table scrolls to the first one. Marks are cleared by any step without access, a reload, and Experiment 1 masking.
+Run keeps its existing heat map; nothing is animated per access. The dock marks need the CPU panel to have been opened (the recorder only runs
+then, as before).
+
+### 17.2 Readable text
+The diagram text was 8-10 pt in scene units and the fit scale could drop to 0.55 (about 4.5-5.5 pt on screen). Now:
+
+| Text | Before | After (scene pt, 100%) | At the smallest fit scale (0.80) |
+|---|---|---|---|
+| register / PC / SP / flag values | 10 | 16 bold mono | 12.8 |
+| box titles | 10 bold | 12.5 bold | 10.0 |
+| binary, was, tags, ports, memory rows | 8 | 11.5 (mono for numbers) | 9.2 |
+| pair label | 10 | 13.5 bold mono | 10.8 |
+| caption | 10 bold | 11.5 bold | 9.2 |
+
+The scene grew from 1030x722 to 1200x722 with larger boxes (registers 104x118, SP 286x184, Memory 748x172); the fit never goes below 0.80
+(it scrolls, and a step that used memory or the stack scrolls to those blocks). Every text goes through one helper that records
+its rectangle; a text that would be wider than its box is shrunk a quarter point at a time, never below 10.5 pt (13 pt for the big values), so a
+wider system font does not clip it (checked with DejaVu Sans / Sans Mono as well as Segoe UI / Cascadia). New option **Size** (Fit, 100 %, 125 %,
+150 %, 200 %) is saved in settings (`cpu_zoom`). Tests render the diagram in 3 themes x 5 window sizes x several states (decimal on) and assert
+that no text is wider or taller than its box and that nothing is below the minimums.
+
+### 17.3 Stack pointer contents
+The SP box shows the address, `[SP]`, `[SP+1]` and the 16-bit word (low byte at SP, high at SP+1), plus the top four words of the stack with the top
+marked `>` (only words really pushed, i.e. below the stack base the Stack panel already tracks; "(stack empty)" otherwise). Values come from
+real memory after the step (`capture_memview`); while an animation shows the pre-step SP the contents are shown only when they belong to the same SP.
+Tests cover PUSH H, PUSH PSW (A high, flags low), POP, CALL (return address) and RET.
+
+### 17.4 Enlarge icon (owner note 4)
+There is no separate "lab" widget: the labs are the **Labs tab of the CPU Architecture panel**, so the panel is what is enlarged. New icon buttons in
+its header (drawn vector icons, themed): Zoom out, Zoom in, Fit and **Enlarge / Restore** (Ctrl+Shift+F; Esc restores; F11 is Step Into so it is not
+used). Each has a tooltip with its shortcut, an accessible name and a keyboard shortcut (Ctrl+= / Ctrl++, Ctrl+-, Ctrl+0). Enlarging lends the panel to a
+maximized top-level window; the dock is never touched, so floating / docked / tabbed state, geometry and visibility come back exactly (tested floating
+and docked). Closing the big window by its title bar also restores. Experiment 1 masking holds in the enlarged view (same panel object; tested,
+including starting the experiment while enlarged).
+
+### 17.5 Masking (Experiment 1)
+Before the prediction nothing from memory is stored or drawn: the panel drops memory snapshots while concealed, the Memory block says
+"hidden until you predict", the SP contents say "contents hidden", the Memory dock marks are cleared, and larger labels do not change the existing
+masking of A, the IN port and the OUT port. Test: the secret byte is first written to memory at HL and onto the stack (real recorded accesses,
+visible when unmasked), then the experiment starts; every text (`node_texts`, tooltips, painted text) is searched for the byte in hex and binary:
+no match; it reappears after the prediction or Help.
+
+### 17.6 Tests and screenshots
+New: `tests/test_phase2_review_fixes.py` (25 test cases). Screenshots re-captured with `tools/phase2_shots.py`; new: `memory_access_STA/LDA/INR_M`,
+`memory_dock_marks_STA/INR_M`, `stack_PSW/POP/CALL/RET`, `stepped_panel_*`, `stepped_docked_800x600/1366x768`, `enlarged_view`, `enlarged_view_labs`,
+`enlarged_view_from_800x600`.

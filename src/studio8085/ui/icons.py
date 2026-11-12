@@ -140,6 +140,24 @@ def _draw(name: str, p: QPainter, c: QColor):
         p.drawRoundedRect(QRectF(4, 4, 16, 16), 2, 2)
         p.drawLine(QPointF(8, 9), QPointF(16, 9)); p.drawLine(QPointF(8, 13), QPointF(16, 13))
         p.drawLine(QPointF(8, 17), QPointF(13, 17))
+    elif name in ("expand", "restore"):  # enlarge to a full window / return to the normal layout
+        if name == "expand":
+            for (x, y, dx, dy) in ((4, 4, 1, 1), (20, 4, -1, 1), (4, 20, 1, -1), (20, 20, -1, -1)):
+                p.drawPolyline(_poly([(x + 7 * dx, y), (x, y), (x, y + 7 * dy)]))
+        else:
+            for (x, y, dx, dy) in ((10, 10, -1, -1), (14, 10, 1, -1), (10, 14, -1, 1), (14, 14, 1, 1)):
+                p.drawPolyline(_poly([(x + 6 * dx, y), (x, y), (x, y + 6 * dy)]))
+    elif name in ("zoom_in", "zoom_out", "fit"):
+        if name == "fit":
+            p.drawRoundedRect(QRectF(4, 6, 16, 12), 2, 2)
+            p.drawPolyline(_poly([(8, 10), (8, 14), (12, 14)]))
+            p.drawPolyline(_poly([(16, 14), (16, 10), (12, 10)]))
+        else:
+            p.drawEllipse(QPointF(10.5, 10.5), 6.5, 6.5)
+            p.drawLine(QPointF(15.5, 15.5), QPointF(21, 21))
+            p.drawLine(QPointF(7.5, 10.5), QPointF(13.5, 10.5))
+            if name == "zoom_in":
+                p.drawLine(QPointF(10.5, 7.5), QPointF(10.5, 13.5))
     else:  # unknown -> dot
         p.setBrush(c)
         p.drawEllipse(QPointF(12, 12), 3, 3)

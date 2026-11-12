@@ -33,7 +33,7 @@ Six sections: (1) sizes x themes, docked and floating; (2) Labs A, B, C; (3) Exp
 (5) Alaa's four fixes; (6) fonts. Results: sections 2-6 PASS; section 1 found D1 (fixed above). Equivalence of the CPU panel on and
 off: 33 programs, 66 comparisons, 0 differences. 119+ evidence PNGs and all scripts live outside the repository in
 `studio8085-proposals\pr4-qa` (and `pr4-qa\final`). Full details: `pr4-qa\final\QA-RESULTS.md`.
-Local tests (offscreen, per file in parallel, test_gui included): 25 files, 997 passed, 0 failed (test_gui 114 passed in 27 min). After the round-3 fixes the real-window scripts c1s (800x600 header), c5 (Alaa, 33 checks, 0 fail) and t13 (masking, F11 enlarged) were re-run; evidence in `pr4-qainal`.
+Local tests (offscreen, per file in parallel, test_gui included): 25 files, 997 passed, 0 failed (test_gui 114 passed in 27 min). After the round-3 fixes the real-window scripts c1s (800x600 header), c5 (Alaa, 33 checks, 0 fail) and t13 (masking, F11 enlarged) were re-run; evidence in `pr4-qa\final`.
 
 ## 3. Remaining limitations
 - RAM in the Memory dock is not masked during Experiment 1 (an earlier program may have stored the answer there).

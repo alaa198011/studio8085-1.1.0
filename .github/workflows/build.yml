@@ -35,6 +35,8 @@ jobs:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: pyproject.toml
+      # Deliberately NO Qt system libraries here: with -m "not gui" tests/conftest.py does not import the GUI test
+      # modules at all, so this stage must run without Qt. On Linux any accidental PySide6 import fails (libEGL).
       - name: Install
         run: |
           python -m pip install --upgrade pip
@@ -70,6 +72,13 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
+      - name: Check that the unit and gui stages together cover the whole suite
+        shell: bash
+        run: |
+          count() { python -m pytest --collect-only -q "$@" | tail -1 | grep -oE '^[0-9]+'; }
+          total=$(count); unit=$(count -m "not gui"); gui=$(count -m gui)
+          echo "total=$total unit=$unit gui=$gui"
+          test -n "$total" && test "$((unit + gui))" -eq "$total"
       - name: GUI tests
         run: python -m pytest -q -m gui --timeout-method=${{ runner.os == 'Windows' && 'thread' || 'signal' }}
 

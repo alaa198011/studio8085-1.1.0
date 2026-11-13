@@ -46,17 +46,45 @@ def _delete_leftover_windows():
     gc.collect()
 
 
+_GUI_MODULE_CACHE: dict[str, bool] = {}
+
+
+def _is_gui_module(path) -> bool:
+    """A test module is a GUI module if it uses Qt (or the shared GUI helpers in test_gui)."""
+    key = str(path)
+    if key not in _GUI_MODULE_CACHE:
+        try:
+            text = Path(key).read_text(encoding="utf-8")
+        except OSError:
+            text = ""
+        _GUI_MODULE_CACHE[key] = "PySide6" in text or "test_gui" in text
+    return _GUI_MODULE_CACHE[key]
+
+
+def pytest_ignore_collect(collection_path, config):
+    """With exactly ``-m "not gui"`` (the CI unit stage), do not even import the GUI modules: deselection happens only
+    after import, and importing PySide6 needs the Qt system libraries (libEGL ...). The unit stage therefore runs
+    without Qt, and the CI unit job proves it by not installing those libraries on Linux."""
+    if (config.getoption("markexpr", "") or "").strip() != "not gui":
+        return None
+    if collection_path.suffix == ".py" and collection_path.name.startswith("test_") and _is_gui_module(collection_path):
+        return True
+    return None
+
+
 def pytest_collection_modifyitems(items):
     """Mark every test module that uses Qt with ``gui``, so CI can run the fast core tests first and the GUI tests as
-    their own job (``-m "not gui"`` and ``-m gui`` together are exactly the whole suite)."""
-    cache: dict[str, bool] = {}
+    their own job (``-m "not gui"`` and ``-m gui`` together are exactly the whole suite). A single test in a core
+    module is marked too when its own code imports Qt or the ``studio8085.ui`` package (which loads PySide6)."""
+    import inspect
+
     for item in items:
-        path = str(item.fspath)
-        if path not in cache:
+        gui = _is_gui_module(item.fspath)
+        if not gui and getattr(item, "function", None) is not None:
             try:
-                text = Path(path).read_text(encoding="utf-8")
-            except OSError:
-                text = ""
-            cache[path] = "PySide6" in text or "test_gui" in text
-        if cache[path]:
+                src = inspect.getsource(item.function)
+            except (OSError, TypeError):
+                src = ""
+            gui = "PySide6" in src or "studio8085.ui" in src
+        if gui:
             item.add_marker(pytest.mark.gui)

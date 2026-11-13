@@ -140,10 +140,21 @@ class DockScroll(QScrollArea):
     def eventFilter(self, obj, e):
         if obj is self.widget() and e.type() == QEvent.Type.LayoutRequest:  # minimum may have changed
             QTimer.singleShot(0, self._fit_panel)
+            self.updateGeometry()  # a panel that pins its header (see minimumSizeHint) may need more height now
         return super().eventFilter(obj, e)
 
     def sizeHint(self):  # lay the docks out at the panel's natural size, as without the scroll area
         return self.widget().sizeHint() if self.widget() is not None else super().sizeHint()
+
+    def minimumSizeHint(self):
+        """The dock may be made small (the panel scrolls), but never so short that a panel's header controls
+        (``pinned_height()``, e.g. the CPU panel's wrapped control rows, whose number depends on the font and the
+        width) would be cut off or scrolled out of reach: the viewport grows to show every wrapped row."""
+        hint = super().minimumSizeHint()
+        pinned = getattr(self.widget(), "pinned_height", None)
+        if pinned is not None:
+            hint.setHeight(max(hint.height(), pinned() + 2 * self.frameWidth()))
+        return hint
 
 
 class MainWindow(QMainWindow):

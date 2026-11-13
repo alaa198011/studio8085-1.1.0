@@ -96,13 +96,47 @@ def _top(node: str) -> float:
 
 
 PAIR_TITLE_X = 28.0  # the pair's title starts this far inside its frame, to the right of the first register's tap
+_FIRST_REGS, _SECOND_REGS = ("B", "D", "H"), ("C", "E", "L")
+_PAIR_OF_REG = {r: pair for pair, regs in PAIRS.items() for r in regs}
+_LOOP_W = 22.0  # width of a self-loop in a pair's right-hand corner
+# The title may be as wide as the gap between PAIR_TITLE_X and the right-hand corner loop / tap of the second register
+# (less a margin): a wider font shrinks the title (fit_font), it never pushes it onto the arrows.
+PAIR_TITLE_AVAIL = (GEOM["C"][0] + GEOM["C"][2] - 8 - _LOOP_W) - GEOM["BC"][0] - 6 - PAIR_TITLE_X
+
+
+def pair_title_font(nid: str) -> QFont:
+    """The font a pair title is really drawn with (the platform font, shrunk to fit PAIR_TITLE_AVAIL)."""
+    return fit_font(fnt(FONT_DETAIL, bold=True), NODE_INFO[nid][0], PAIR_TITLE_AVAIL)
+
+
+def pair_title_rect(nid: str) -> QRectF:
+    """Scene rectangle of a register pair's title, from the metrics of the font in use: arrows and taps are routed
+    around it, so this holds for any font (DejaVu on Linux is much wider than Segoe UI on Windows)."""
+    gx, gy, _, _ = GEOM[nid]
+    f = pair_title_font(nid)
+    fm = QFontMetricsF(f)
+    return QRectF(gx + PAIR_TITLE_X, gy + 4, fm.horizontalAdvance(NODE_INFO[nid][0]), 22 - 6)
+
+
+def _clear_of_title(reg: str, x0: float, x1: float, margin: float = 6.0) -> bool:
+    """Is the vertical band x0..x1 (scene coordinates) beside the title of the pair that holds ``reg``?"""
+    pair = _PAIR_OF_REG.get(reg)
+    if pair is None:
+        return True
+    t = pair_title_rect(pair)
+    return x1 + margin <= t.left() or x0 - margin >= t.right()
 
 
 def _reg_tap_x(node: str) -> float:
-    """x where a register's line to the data path leaves its box. B, D and H (the first register of a pair) leave
-    near their left corner, so the line passes beside the pair title ("Register pair BC") instead of through it."""
+    """x where a register's line to the data path leaves its box. The first register of a pair (B, D, H) leaves near
+    its left corner, before the pair title. The second (C, E, L) leaves from its middle when that is clear of the
+    title as drawn in the current font, otherwise from its right-hand corner, after the title."""
     x, _, w, _ = GEOM[node]
-    return x + 8 if node in ("B", "D", "H") else x + w / 2
+    if node in _FIRST_REGS:
+        return x + 8
+    if node in _SECOND_REGS and not _clear_of_title(node, x + w / 2, x + w / 2):
+        return x + w - 8
+    return x + w / 2
 
 
 def _data_tap(node: str) -> list[QPointF] | None:
@@ -155,12 +189,15 @@ def route(flow: Flow) -> QPainterPath:
     y = ADDR_Y if use_addr else DATA_Y
     if src == dst:
         x, ya, w, _ = GEOM[src]
-        if src in ("B", "D", "H"):  # keep this small loop in the corner, beside the pair title instead of across it
+        if src in _FIRST_REGS:  # keep this small loop in the corner, beside the pair title instead of across it
             path.moveTo(x + 13, ya)
             path.cubicTo(x + 13, ya - 26, x + 1, ya - 26, x + 1, ya)
             return path
-        path.moveTo(x + w * 0.35, ya)
-        path.cubicTo(x + w * 0.35, ya - 22, x + w * 0.65, ya - 22, x + w * 0.65, ya)
+        x0, x1 = x + w * 0.35, x + w * 0.65
+        if src in _SECOND_REGS and not _clear_of_title(src, x0, x1):  # the title (in this font) reaches the middle
+            x0, x1 = x + w - 8 - _LOOP_W, x + w - 8  # use the right-hand corner, after the title
+        path.moveTo(x0, ya)
+        path.cubicTo(x0, ya - 22, x1, ya - 22, x1, ya)
         return path
     a, b = tap(src), tap(dst)
     if a is None or b is None:
@@ -701,7 +738,7 @@ class PairFrame(QGraphicsObject):
         label = f"{self.nid} = {val}" + (f"  ({self.value})" if self.decimal and self.value is not None and not self.masked else "")
         tag = " ".join(([_ROLE_TAG[self.role]] if self.role else []) + (["Δ"] if self.changed else []))
         bf = fnt(FONT_DETAIL, bold=True)
-        self._t(p, PAIR_TITLE_X, 4, self.rect.width() - PAIR_TITLE_X - 8, 22, NODE_INFO[self.nid][0], bf)
+        self._t(p, PAIR_TITLE_X, 4, PAIR_TITLE_AVAIL, 22, NODE_INFO[self.nid][0], bf)
         if tag:
             bw = QFontMetricsF(bf).horizontalAdvance(tag)
             self._t(p, self.rect.width() - bw - 10, 4, bw + 4, 22, tag, bf, _AR)
@@ -1610,6 +1647,13 @@ class CpuArchitecturePanel(QWidget):
         self.view.verticalScrollBar().setValue(0)  # a diagram taller than the panel starts at its top
         self.view.horizontalScrollBar().setValue(0)
 
+    def pinned_height(self) -> int:
+        """Height the header (all its wrapped rows) needs, plus a strip of the diagram below it. A dock hosting this
+        panel must not be shorter, or the controls would be clipped or scrolled away (see DockScroll)."""
+        m = self.layout().contentsMargins() if self.layout() is not None else None
+        top = m.top() if m is not None else 0
+        return top + self.header.sizeHint().height() + self.header.spacing() + 40
+
     def _reflow_header(self):
         """Wrap the header controls to the panel width (greedy, in reading order). Same widgets, new rows."""
         avail = max(120, self.width() - 12)
@@ -1652,6 +1696,11 @@ class CpuArchitecturePanel(QWidget):
             self.header.addLayout(r)
         self.header.invalidate()
         self.updateGeometry()
+        parent = self.parentWidget()
+        if parent is not None:  # the scroll area / dock that hosts us re-reads pinned_height()
+            parent.updateGeometry()
+            if parent.parentWidget() is not None:
+                parent.parentWidget().updateGeometry()
 
     def resizeEvent(self, e):
         super().resizeEvent(e)

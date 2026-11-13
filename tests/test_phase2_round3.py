@@ -10,6 +10,7 @@ from PySide6.QtCore import QPoint, QRect, Qt  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 
 from studio8085.ui.mainwindow import CONCEALED_REGISTERS  # noqa: E402
+from fontsim import ui_font  # noqa: E402,F401
 from test_gui import _settle, app, set_src  # noqa: E402,F401
 from test_phase2_qa_fixes import every_text, leaks_any_format, machine_state  # noqa: E402
 from test_trainer_phase1_fixes import SW, close, new_window  # noqa: E402
@@ -27,8 +28,8 @@ def _inside(widget, viewport):
 
 # ------------------------------------------------ D1
 @pytest.mark.parametrize("mode", ["advanced", "beginner"])
-@pytest.mark.parametrize("size", [(800, 600), (1024, 600)])
-def test_d1_every_header_control_is_inside_the_dock_at_a_small_window(app, mode, size):
+@pytest.mark.parametrize("size", [(800, 600), (1024, 600), (1366, 768), (1920, 1080)])
+def test_d1_every_header_control_is_inside_the_dock_at_a_small_window(app, ui_font, mode, size):
     w = new_window(app, mode, size)
     try:
         p = open_panel(w, app)

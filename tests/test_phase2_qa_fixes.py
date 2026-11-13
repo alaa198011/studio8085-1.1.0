@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QApplication, QLabel, QTableView, QTableWidget, QW
 
 from studio8085.core.visual import PAIRS, Flow  # noqa: E402
 from studio8085.ui import cpuview  # noqa: E402
+from fontsim import ui_font  # noqa: E402,F401
 from test_gui import _settle, app, set_src  # noqa: E402,F401
 from test_trainer_phase1_fixes import SW, _leaks, close, new_window, prepare, visible_texts  # noqa: E402
 from test_visual_gui import open_panel  # noqa: E402
@@ -286,7 +287,7 @@ def _title_rects(p):
     return out
 
 
-def test_no_flow_arrow_or_bus_tap_crosses_a_register_pair_title(app):
+def test_no_flow_arrow_or_bus_tap_crosses_a_register_pair_title(app, ui_font):
     w = new_window(app, "advanced")
     try:
         p = open_panel(w, app)

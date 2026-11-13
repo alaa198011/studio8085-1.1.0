@@ -43,6 +43,9 @@ Local tests (offscreen, per file in parallel, test_gui included): 25 files, 997 
 ## 4. CI
 Pending - see PR #4 checks.
 
+- 62c785e: Linux 3 failures (font-metric layout), fixed in the next commit (local, not yet pushed; layout now derived from font metrics, tests run with the default and a wide font).
+- Test stage was 3-6 h per OS: closed MainWindows were never deleted, so every later test got slower. Fixed by deleting leftover windows after each test; CI is split into unit / gui / package jobs with timeouts.
+
 ## 5. Decisions for owner
 - **RAM masking in Experiment 1.** Options: (a) keep as is and document it (current); (b) hide the Memory dock values (or only cells
   written by an earlier run) while the answer is concealed; (c) clear RAM when Experiment 1 starts (changes machine state, so it

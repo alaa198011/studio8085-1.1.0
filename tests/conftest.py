@@ -77,6 +77,12 @@ def pytest_collection_modifyitems(items):
     their own job (``-m "not gui"`` and ``-m gui`` together are exactly the whole suite). A single test in a core
     module is marked too when its own code imports Qt or the ``studio8085.ui`` package (which loads PySide6)."""
     import inspect
+    import re
+
+    tools = Path(__file__).resolve().parents[1] / "tools"
+
+    def uses_qt(text: str) -> bool:
+        return "PySide6" in text or "studio8085.ui" in text
 
     for item in items:
         gui = _is_gui_module(item.fspath)
@@ -85,6 +91,11 @@ def pytest_collection_modifyitems(items):
                 src = inspect.getsource(item.function)
             except (OSError, TypeError):
                 src = ""
-            gui = "PySide6" in src or "studio8085.ui" in src
+            gui = uses_qt(src)
+            # ... or when it runs a tools/ script (in a subprocess) that uses Qt, e.g. tools/contrast_check.py
+            for name in re.findall(r"""["'](\w+\.py)["']""", src):
+                script = tools / name
+                if not gui and script.is_file() and uses_qt(script.read_text(encoding="utf-8")):
+                    gui = True
         if gui:
             item.add_marker(pytest.mark.gui)

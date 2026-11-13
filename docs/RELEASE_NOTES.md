@@ -1,8 +1,49 @@
 # Release notes
 
-## Unreleased - Phase 1: Virtual 8085 Trainer Kit
+## 1.2.0 - Trainer Kit, Interactive CPU Architecture panel
 
-### New
+Install instructions: [INSTALL.md](INSTALL.md). Full list of changes: `CHANGELOG.md`. No CPU instruction, the assembler, the machine
+or the opcode table changed (a guard test checks it).
+
+### Phase 2: Interactive CPU Architecture panel
+- **CPU Architecture panel** (*View* / *Lab* menus): a vector diagram of the registers, register pairs, flags, ALU, buses, memory and
+  ports, with step-by-step data-flow arrows and an explanation of each step. It reads the simulator before and after each step; it never
+  executes or calculates anything itself.
+- **Explain Execution**, Animate, Reduce motion, Decimal options, speed, Pause/Skip/Replay.
+- **Three labs** in the panel: A (register transfer), B (ALU and flags), C (trainer I/O: switches -> A -> LEDs).
+- **Experiment 1 masking** extended to the panel: the diagram shows `??` and no step before the student predicts.
+- Detailed visuals for data transfer, arithmetic, logical, control flow, stack, I/O and NOP/HLT instructions; a generic before/after
+  view (changes still highlighted) for the rest.
+
+### PR #4 owner-review fixes
+- **Memory cells used by each step:** WRITE/READ rows with the old and new values in the diagram, and R/W marks in the Memory dock.
+- **Readable text** in all three themes, plus a **Size** option (Fit / 100 / 125 / 150 / 200 %).
+- **Stack pointer box** with the address, the contents (`[SP]`, `[SP+1]`, the 16-bit word) and the top words.
+- **Enlarge / Restore** with an icon, tooltips and accessible names, and **zoom controls**; Restore returns the dock state exactly and
+  keeps the zoom level and scroll position. The header wraps onto more rows in a narrow dock (the editor keeps at least 440 px at 800x600).
+- **Focus-aware shortcuts:** Ctrl+= / Ctrl+- / Ctrl+0 zoom the CPU panel when it has the focus (the editor otherwise); Ctrl+Shift+F
+  enlarges and Esc restores.
+- **F5 / F10 / F11 / Shift+F11 work in the enlarged view** (it is a separate window).
+- **Experiment 1 masks all registers and flags** (A, B, C, D, E, H, L, BC/DE/HL, flags) in the Registers dock, Flags dock and diagram,
+  with identical placeholders; PC and SP stay visible. This also closes a leak of a stale accumulator value from an earlier run. Display
+  only: the CPU, memory and ports are untouched.
+- Other fixes: a flow arrow crossed the register-pair titles; the CALL explanation now shows the real return address (PC + instruction length).
+
+### Known limitations
+- Instruction-level, not cycle-accurate: no T-state or bus-cycle timing is modelled.
+- Micro-steps and data-path/bus flows are conceptual teaching diagrams (solid lines: a destination change was observed; dashed: conceptual).
+- The raw Memory dock is not masked during Experiment 1 (an earlier program may have stored the answer in RAM).
+- Memory reads are shown on Step Into (with access tracking on); during a continuous Run only the last access kind is shown.
+- Linux was verified headless (offscreen) only; HiDPI/scaling was verified in software only.
+
+### CI and performance
+The test suite is split into unit, gui and package stages. A full CI run now takes about 10 minutes instead of 4-6 hours: closed test
+windows were never deleted, so every later test got slower; they are now deleted after each test. The visualizer costs about 60
+microseconds per Step Into and under 1 % during Run.
+
+### Phase 1: Virtual 8085 Trainer Kit
+
+#### New
 - **Virtual 8085 Trainer Kit** dock (*Lab > Show the Virtual 8085 Trainer Kit*, or *View*): 8 toggle switches SW7...SW0 on
   `IN 00H`, 8 LEDs LED7...LED0 on `OUT 01H` and a seven-segment digit with decimal point on `OUT 02H`. These are virtual teaching
   port assignments, not real kit addresses; they can be changed (*Lab > Trainer Kit Port Mapping...*, validated, conflicts rejected).
@@ -27,14 +68,14 @@
 - `docs/TRAINER_KIT.md`: ports, bit order, segment map, polarity, hex table, resets, limitations, how to run the lab.
 - `--selftest` also checks the trainer kit (switches -> `IN` -> A -> `OUT` -> LEDs, and that disconnecting restores the CPU hooks).
 
-### Compatibility
+#### Compatibility
 - No CPU instruction changed. The kit attaches to the existing `IN`/`OUT` hooks and chains to the debugger's OUT log; the trace and
   the Output log are unchanged. With *Kit connected* unchecked it is detached and `IN`/`OUT` behave byte-for-byte as in 1.1.0 (tested).
 - While connected, the switches own their port: `IN 00H` reads them and the I/O Ports row 00h mirrors them (typing there sets them).
 - Beginner mode does not show the kit until it is opened from the Lab or View menu, so the Beginner layout is unchanged. Layouts saved
   by 1.1.0 are restored as before.
 
-### Fixed
+#### Fixed
 - **A session saved in Beginner mode restored all 13 panels** instead of the Beginner set (a bug present since 1.1.0: Qt's `restoreState`
   does not hide the docks the default layout had shown, and nothing enforced the Beginner set afterwards). Beginner now always comes back
   as the Beginner set; Advanced restores its own saved layout; layouts saved by 1.1.0 restore sensibly.

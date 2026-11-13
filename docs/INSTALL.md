@@ -28,14 +28,17 @@ File: `8085Studio-Setup-1.2.0.exe` (checksum in `SHA256SUMS-windows.txt`).
 File: `8085Studio-linux-x86_64.tar.gz` (checksum in `SHA256SUMS-linux.txt`).
 
 ```bash
-sudo apt install libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3 libxcb-cursor0   # Debian/Ubuntu
+sudo apt install libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3 libxcb-cursor0 \
+    libxkbcommon-x11-0 libxcb-icccm4 libxcb-util1 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxcb-xkb1   # Debian/Ubuntu
 sha256sum -c SHA256SUMS-linux.txt --ignore-missing       # run in the folder holding the download
 tar -xzf 8085Studio-linux-x86_64.tar.gz
 ./8085Studio/8085Studio
 ```
 
-`./8085Studio/8085Studio --selftest` prints `selftest ok` if the build works on your system. The Linux build has been verified in a
-headless (offscreen) environment only; reports from real desktops are welcome. To remove it, delete the `8085Studio` folder.
+The bundle needs glibc 2.35 or newer (Ubuntu 22.04+, Debian 12+). Most desktop installs already have the libraries above; the second
+line is what Qt's X11 (`xcb`) plugin needs on minimal systems (on a Wayland session Qt can use its Wayland plugin instead).
+`./8085Studio/8085Studio --selftest` prints `selftest ok` if the build works on your system. Tested: CI (Ubuntu, headless) and
+Ubuntu 24.04 LTS under WSL2 (self-test and app start); reports from real Linux desktops are welcome. To remove it, delete the `8085Studio` folder.
 
 ## Python wheel / source distribution
 

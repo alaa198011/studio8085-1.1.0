@@ -30,11 +30,13 @@ or the opcode table changed (a guard test checks it).
 - Other fixes: a flow arrow crossed the register-pair titles; the CALL explanation now shows the real return address (PC + instruction length).
 
 ### Known limitations
-- Instruction-level, not cycle-accurate: no T-state or bus-cycle timing is modelled.
+- Instruction-level, not cycle-accurate: T-states are counted per instruction, but individual machine/bus cycles are not modelled.
 - Micro-steps and data-path/bus flows are conceptual teaching diagrams (solid lines: a destination change was observed; dashed: conceptual).
 - The raw Memory dock is not masked during Experiment 1 (an earlier program may have stored the answer in RAM).
 - Memory reads are shown on Step Into (with access tracking on); during a continuous Run only the last access kind is shown.
 - Linux was verified headless (offscreen) only; HiDPI/scaling was verified in software only.
+- The Windows installer and executable are not code-signed. Windows 11 with Smart App Control on blocks them; use the Python wheel
+  there (see [INSTALL.md](INSTALL.md)).
 
 ### CI and performance
 The test suite is split into unit, gui and package stages. A full CI run now takes about 10 minutes instead of 4-6 hours: closed test

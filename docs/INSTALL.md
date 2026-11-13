@@ -14,6 +14,10 @@ File: `8085Studio-Setup-1.2.0.exe` (checksum in `SHA256SUMS-windows.txt`).
    The hash must equal the one in `SHA256SUMS-windows.txt` (the file lists it in lower case; PowerShell prints upper case).
 2. Double-click the installer. Because it is unsigned, Windows SmartScreen may say "Windows protected your PC": click **More info**,
    then **Run anyway**.
+   **Windows 11 with Smart App Control turned on** blocks unsigned programs completely ("An Application Control policy has blocked this
+   file"), with no *Run anyway* option. This was observed on a test PC for this release. On such a PC use the Python wheel below
+   (`pip install`), which runs through the signed Python interpreter, or build from source. Turning Smart App Control off is a
+   system-wide security decision for the PC's owner and is not recommended just for this program.
 3. By default it installs per user without administrator rights (the setup dialog lets you choose all users) into the *8085 Studio* folder
    under the Programs directory, adds a Start-menu entry and optionally a desktop shortcut.
 4. Optional check: `8085Studio.exe --selftest` in the install folder prints `selftest ok` and exits with code 0.
@@ -44,7 +48,7 @@ pip install studio8085-1.2.0-py3-none-any.whl           # or: pip install studio
 studio8085
 ```
 
-`studio8085` is the console entry point (`[project.gui-scripts]` in `pyproject.toml`; PySide6 is installed as a dependency). On Linux, if Qt
+`studio8085` is the application launcher (`[project.gui-scripts]` in `pyproject.toml`; PySide6 is installed as a dependency). On Linux, if Qt
 cannot load the "xcb" platform plugin, install `libxcb-cursor0`.
 
 ## Other ways

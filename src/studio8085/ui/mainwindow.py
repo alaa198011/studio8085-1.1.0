@@ -25,11 +25,11 @@ from ..core.opcodes import TABLE
 from ..core.peripherals import PeripheralConfigError, PortMap, TrainerKit
 from ..core.lab_content import LABS
 from ..core.trace import to_csv, to_html, to_markdown
-from ..core.visual import StepRecorder, capture_state, kit_view
+from ..core.visual import StepRecorder, capture_memview, capture_state, kit_view
 from .docks import (ExplainPanel, FlagsPanel, InterruptPanel, IOPanel, ListingPanel, OutputPanel,
                     ProblemsPanel, RegistersPanel, StackPanel, SymbolsPanel, TracePanel, parse_hex)
 from .cpuview import TITLE as CPU_TITLE
-from .cpuview import CpuArchitecturePanel
+from .cpuview import CpuArchitecturePanel, EnlargedWindow
 from .editor import CodeEditor, monospace_font
 from .fontscale import scale_monospace
 from .help import ReferenceDialog
@@ -92,6 +92,11 @@ class FindBar(QFrame):
         self.editor.highlight_matches(self.text.text(), self.case.isChecked())
 
 
+# registers (and pairs) whose value is shown as ?? in the Registers dock while Experiment 1 hides the answer;
+# PC and SP stay visible. Every placeholder is the same, so it does not say which register holds what.
+CONCEALED_REGISTERS = ("A", "B", "C", "D", "E", "H", "L", "BC", "DE", "HL")
+
+
 class DockScroll(QScrollArea):
     """Holds a dock panel so the dock can be made smaller than the panel's minimum size.
 
@@ -135,10 +140,21 @@ class DockScroll(QScrollArea):
     def eventFilter(self, obj, e):
         if obj is self.widget() and e.type() == QEvent.Type.LayoutRequest:  # minimum may have changed
             QTimer.singleShot(0, self._fit_panel)
+            self.updateGeometry()  # a panel that pins its header (see minimumSizeHint) may need more height now
         return super().eventFilter(obj, e)
 
     def sizeHint(self):  # lay the docks out at the panel's natural size, as without the scroll area
         return self.widget().sizeHint() if self.widget() is not None else super().sizeHint()
+
+    def minimumSizeHint(self):
+        """The dock may be made small (the panel scrolls), but never so short that a panel's header controls
+        (``pinned_height()``, e.g. the CPU panel's wrapped control rows, whose number depends on the font and the
+        width) would be cut off or scrolled out of reach: the viewport grows to show every wrapped row."""
+        hint = super().minimumSizeHint()
+        pinned = getattr(self.widget(), "pinned_height", None)
+        if pinned is not None:
+            hint.setHeight(max(hint.height(), pinned() + 2 * self.frameWidth()))
+        return hint
 
 
 class MainWindow(QMainWindow):
@@ -247,6 +263,8 @@ class MainWindow(QMainWindow):
         self.visual.enabled = False  # switched on while the panel is visible: zero cost otherwise
         self.cpu_panel: CpuArchitecturePanel | None = None  # built the first time it is opened (see _ensure_cpu_view)
         self.cpu_dock: QDockWidget | None = None
+        self.cpu_big: EnlargedWindow | None = None  # the maximized window while the CPU view is enlarged
+        self._mv_t = 0.0
         self.io.model.dataChanged.connect(self._io_edited)
         for p in (self.registers, self.flags, self.stack, self.io, self.memory, self.symbols, self.interrupts,
                   self.explain):
@@ -512,8 +530,12 @@ class MainWindow(QMainWindow):
         self.a_comment = A("Toggle &Comment", lambda: self.editor.toggle_comment(), "Ctrl+/")
         self.a_instr = A("&Instructions", self.show_instructions, "Ctrl+I", "instructions", "text",
                          "Instruction list: click one to insert it (opcodes shown)")
-        self.a_zoom_in = A("Zoom &In", lambda: self.editor.zoom(1), "Ctrl+=")
-        self.a_zoom_out = A("Zoom &Out", lambda: self.editor.zoom(-1), "Ctrl+-")
+        # Ctrl+= / Ctrl+- are focus-aware: the CPU panel zooms its diagram when it (or anything in it) has the
+        # focus, the editor zooms its text everywhere else. One owner per key: the panel's own copies of these
+        # shortcuts are switched off while the panel lives in this window (they would make the key ambiguous).
+        self.a_zoom_in = A("Zoom &In", lambda: self._zoom_key(1), "Ctrl+=")
+        self.a_zoom_in.setShortcuts([QKeySequence("Ctrl+="), QKeySequence("Ctrl++")])
+        self.a_zoom_out = A("Zoom &Out", lambda: self._zoom_key(-1), "Ctrl+-")
 
         self.a_assemble = A("&Assemble", self.cmd_assemble, "F7", "assemble", "text", "Assemble and load the program")
         self.a_run = A("&Run / Continue", self.cmd_run, "F5", "run", "ok", "Run (or continue) the program")
@@ -1121,6 +1143,7 @@ class MainWindow(QMainWindow):
             return False
         self.machine.load(res, keep_memory=self.prefs.get("keep_memory"))
         self.visual.reset()
+        self.memory.set_step_accesses(())
         if self.cpu_panel is not None:
             self.cpu_panel.reset()
         self.kit.reset_outputs()  # assemble / restart / reload: LEDs and display blank, switches kept
@@ -1197,8 +1220,7 @@ class MainWindow(QMainWindow):
         rec = self.visual.end()
         self.refresh_all()
         self._update_last("run")
-        if rec is not None and self.cpu_panel is not None:
-            self.cpu_panel.show_record(rec)
+        self._show_step(rec)
         self.say(f"Paused at {self.machine.cpu.pc:04X}h", "warn")
 
     def cmd_stop(self):
@@ -1309,8 +1331,23 @@ class MainWindow(QMainWindow):
         rec = self.visual.end()
         self.refresh_all()
         self._update_last(self._mode)
+        self._show_step(rec)
+
+    def _show_step(self, rec):
+        """Hand the finished step to the CPU diagram and mark its memory cells in the Memory view."""
         if rec is not None and self.cpu_panel is not None:
+            self.cpu_panel.set_memview(self._memview(rec))
             self.cpu_panel.show_record(rec)
+        concealed = self.trainer.concealed
+        self.memory.set_step_accesses(() if rec is None or concealed else rec.mem_accesses)
+
+    def _cpu_active(self) -> bool:
+        return self.cpu_panel is not None and (self.cpu_big is not None
+                                               or (self.cpu_dock is not None and self.cpu_dock.isVisible()))
+
+    def _memview(self, rec=None):
+        last = rec.mem_accesses[-1].addr if rec is not None and rec.mem_accesses else None
+        return capture_memview(self.machine.cpu, self.stack.base, last)
 
     def _raise_irq(self, name: str, rst: int):
         if self.machine.program is None:
@@ -1361,7 +1398,7 @@ class MainWindow(QMainWindow):
 
     def _apply_conceal(self, on: bool):
         """Experiment 1, before the student has predicted: show the kit's ports as ``??`` in the I/O Ports table,
-        the Output log, the Explain panel and the Trace table. Display only - ``cpu.io``, the switches and the
+        the Output log, the Explain panel, the Trace table and register A in the Registers dock. Display only - ``cpu.io``, the switches and the
         CPU are never touched, and everything is shown again as soon as the student predicts, asks for help or
         ends the experiment."""
         p = self.kit.ports
@@ -1369,10 +1406,14 @@ class MainWindow(QMainWindow):
         self.io.set_concealed(ports)
         self.output.set_concealed(ports)
         self.trace.set_concealed(on)
+        # a copy of the answer left by an earlier run (A, or B/C/D/E/H/L/pairs after MOV B,A ...) would give it away
+        self.registers.set_concealed(CONCEALED_REGISTERS if on else ())
+        self.flags.set_concealed(on)
         self.explain.concealed = on
         if self.cpu_panel is not None:
             self.cpu_panel.set_concealed(on, tuple(ports))
         if on:
+            self.memory.set_step_accesses(())  # the marked cells (and their values) are hidden with the answer
             self.explain.clear_last()
         self.explain.refresh_next(self.explain._active)
         self.refresh_all()
@@ -1496,7 +1537,7 @@ class MainWindow(QMainWindow):
         rm = p.get("cpu_reduce_motion")
         return {"explain": p.get("cpu_explain"), "animate": p.get("cpu_animate"),
                 "reduce_motion": None if rm == "auto" else rm == "on", "decimal": p.get("cpu_decimal"),
-                "speed": p.get("cpu_speed")}
+                "speed": p.get("cpu_speed"), "zoom": p.get("cpu_zoom")}
 
     def _save_cpu_settings(self):
         s = self.cpu_panel.settings()
@@ -1506,16 +1547,19 @@ class MainWindow(QMainWindow):
         p.set("cpu_reduce_motion", "on" if s["reduce_motion"] else "off")
         p.set("cpu_decimal", s["decimal"])
         p.set("cpu_speed", s["speed"])
+        p.set("cpu_zoom", s["zoom"])
 
     def _ensure_cpu_view(self):
         """Build the panel and its (floating) dock on first use: users who never open it pay nothing."""
         if self.cpu_panel is not None:
             return
         self.cpu_panel = CpuArchitecturePanel()
+        self.cpu_panel.set_zoom_keys(False)  # Ctrl+= / Ctrl+- are dispatched by the main window while docked or floating
         self.cpu_panel.set_theme(self.theme)
         self.cpu_panel.labs.load_requested.connect(self.load_visual_lab)
         self.cpu_panel.labs.check_requested.connect(self.check_visual_lab)
         self.cpu_panel.settings_changed.connect(self._save_cpu_settings)
+        self.cpu_panel.enlarge_requested.connect(self._enlarge_cpu)
         self.cpu_panel.apply_settings(**self._cpu_settings())
         d = QDockWidget(CPU_TITLE, self)
         d.setObjectName("cpuview")
@@ -1563,6 +1607,56 @@ class MainWindow(QMainWindow):
         if want > d.width():
             self.resizeDocks([d], [want], Qt.Orientation.Horizontal)
 
+    def _zoom_key(self, direction: int):
+        """Ctrl+= / Ctrl+-: zoom the CPU diagram when the CPU panel has the focus, otherwise the editor text."""
+        fw = QApplication.focusWidget()
+        panel = self.cpu_panel
+        if panel is not None and fw is not None and (fw is panel or panel.isAncestorOf(fw)):
+            panel.zoom_by(1.15 if direction > 0 else 1 / 1.15)
+        else:
+            self.editor.zoom(direction)
+
+    def _enlarge_cpu(self, on: bool):
+        """Show the CPU Architecture panel (which hosts the labs) in a maximized window, or put it back.
+
+        The dock is never touched (it keeps its floating / docked / tabbed state, geometry and visibility); only the
+        panel widget is lent to the big window and handed back, so restoring is exact. Esc or the panel's button
+        closes the big window. The same panel object is shown, so Experiment 1 masking holds while enlarged."""
+        panel, d = self.cpu_panel, self.cpu_dock
+        if panel is None or d is None:
+            return
+        if on and self.cpu_big is None:
+            self._cpu_view_state = panel.view_state()  # the docked diagram's zoom and scroll position, put back on restore
+            scroll = d.widget()
+            scroll.takeWidget()
+            self.cpu_big = EnlargedWindow(panel, CPU_TITLE + " - enlarged")
+            self.cpu_big.closed.connect(lambda: self._enlarge_cpu(False))
+            self.cpu_big.setStyleSheet(self.styleSheet())
+            # the enlarged window is a separate top-level window: lend it the run/step actions (F5, F10, F11, ...)
+            # so they keep working there; the panel zooms with its own Ctrl+= / Ctrl+- while it is in that window
+            self.cpu_big.set_actions([self.a_assemble, self.a_run, self.a_pause, self.a_stop, self.a_restart,
+                                      self.a_into, self.a_over, self.a_out])
+            panel.set_zoom_keys(True)
+            panel.mark_enlarged(True)
+            self.cpu_big.showMaximized()
+            panel.show()
+            self.visual.enabled = True
+            panel.set_memview(self._memview())
+            panel.show_live(capture_state(self.machine.cpu), immediate=True)
+        elif not on and self.cpu_big is not None:
+            big, self.cpu_big = self.cpu_big, None
+            big.release()
+            panel.set_zoom_keys(False)
+            d.widget().setWidget(panel)
+            panel.show()
+            panel.mark_enlarged(False)
+            panel.restore_view_state(self._cpu_view_state)
+            big.deleteLater()
+            self.visual.enabled = d.isVisible()
+            panel.setFocus()
+        else:
+            panel.mark_enlarged(self.cpu_big is not None)
+
     def _toggle_cpu_view(self, on: bool):
         if on:
             self.show_cpu_view()
@@ -1571,13 +1665,14 @@ class MainWindow(QMainWindow):
 
     def _cpu_visibility(self, vis: bool):
         """The recorder only runs while the panel is visible; hidden means no instrumentation at all."""
-        self.visual.enabled = bool(vis)
+        self.visual.enabled = bool(vis) or self.cpu_big is not None
         if hasattr(self, "a_cpu_view"):
             self.a_cpu_view.blockSignals(True)
             self.a_cpu_view.setChecked(bool(vis))
             self.a_cpu_view.blockSignals(False)
         if vis:
             self.cpu_panel.set_kit(kit_view(self.kit))
+            self.cpu_panel.set_memview(self._memview())
             self.cpu_panel.show_live(capture_state(self.machine.cpu), immediate=True)
 
     def show_cpu_view(self):
@@ -1666,8 +1761,12 @@ class MainWindow(QMainWindow):
                 w.refresh()
         self._pull_out_log()
         self._update_exec_line()
-        if self.cpu_dock is not None and self.cpu_dock.isVisible():
+        if self._cpu_active():
             self.cpu_panel.set_kit(kit_view(self.kit))
+            now = time.perf_counter()
+            if self.state != "running" or now - self._mv_t >= 0.1:  # coalesced like the diagram while Run is on
+                self._mv_t = now
+                self.cpu_panel.set_memview(self._memview())
             self.cpu_panel.show_live(capture_state(cpu), immediate=self.state != "running")
         if self.state != "running":
             self.explain.refresh_next(self.machine.program is not None and self.state != "idle")

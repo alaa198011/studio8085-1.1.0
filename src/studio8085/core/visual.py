@@ -144,6 +144,7 @@ class Access:
     addr: int
     value: int
     observed: bool  # True: seen by the simulator's access counters/diff; False: expected from the instruction
+    old: int | None = None  # the byte before the step (writes only); None for reads
 
 
 @dataclass(frozen=True)
@@ -617,11 +618,11 @@ class StepRecorder:
                 rd0, wr0, v0 = p["counters"][a]
                 if p["track"] and mem.track and rd0 is not None:
                     if mem.rd[a] != rd0:
-                        accesses.append(Access("R", a, mem.data[a], True))
+                        accesses.append(Access("R", a, v0, True))  # the byte as it was when read (before any write of this step)
                     if mem.wr[a] != wr0:
-                        accesses.append(Access("W", a, mem.data[a], True))
+                        accesses.append(Access("W", a, mem.data[a], True, v0))
                 elif mem.data[a] != v0:
-                    accesses.append(Access("W", a, mem.data[a], True))  # no counters: only changes are provable
+                    accesses.append(Access("W", a, mem.data[a], True, v0))  # no counters: only changes are provable
         ports: list[PortEvent] = []
         if kind == "instr" and dec.mnemonic == "IN" and dec.imm is not None:
             ports.append(PortEvent("IN", dec.imm, post.reg("A"), True))
@@ -740,3 +741,69 @@ class StepRecorder:
             unaffected = "Flags are unchanged by this step."
             flag_why = [unaffected]
         return why, flag_why, summary, details
+
+
+# ------------------------------------------------------- memory / stack view
+RECENT_WINDOW = 400  # instructions: the same window the Memory heat map uses
+RECENT_LIMIT = 6  # the "recently used" list is short and bounded
+STACK_WORDS = 4
+CELLS_AROUND = 5
+
+
+@dataclass(frozen=True)
+class MemView:
+    """What memory looks like right now (read from the simulator, never owned or changed here).
+
+    * ``stack``: the top words of the stack ``(address, 16-bit word)``, lowest address (the top) first. Only
+      words that were really pushed (below the stack base) are listed.
+    * ``hl_cells`` / ``last_cells``: ``CELLS_AROUND`` bytes around HL (the M operand) and around the most recent
+      access. ``(address, value)``.
+    * ``recent``: cells used in the last ``RECENT_WINDOW`` instructions, newest first, at most ``RECENT_LIMIT``.
+      The simulator keeps only the LAST access kind per cell, so this list never claims more than that, and it is
+      empty when memory access tracking is off.
+    """
+
+    sp: int
+    sp_lo: int  # byte at [SP]
+    sp_hi: int  # byte at [SP+1]
+    stack: tuple[tuple[int, int], ...]
+    stack_empty: bool
+    hl: int
+    hl_cells: tuple[tuple[int, int], ...]
+    last: int | None
+    last_cells: tuple[tuple[int, int], ...]
+    recent: tuple[Access, ...]
+
+    @property
+    def sp_word(self) -> int:
+        return self.sp_lo | self.sp_hi << 8
+
+
+def _cells(data, centre: int, n: int = CELLS_AROUND) -> tuple[tuple[int, int], ...]:
+    first = centre - n // 2
+    return tuple(((first + i) & 0xFFFF, data[(first + i) & 0xFFFF]) for i in range(n))
+
+
+def capture_memview(cpu, stack_base: int | None = None, last: int | None = None, with_recent: bool = True) -> MemView:
+    """Read-only snapshot of the stack top, the cells around HL / the last access and the recent accesses."""
+    mem = cpu.mem
+    data = mem.data
+    sp = cpu.sp & 0xFFFF
+    base = sp if stack_base is None else stack_base
+    words = []
+    for i in range(STACK_WORDS):
+        a = (sp + 2 * i) & 0xFFFF
+        if a >= base or a < sp:  # only words really pushed (below the stack base); stop at address wrap-around
+            break
+        words.append((a, data[a] | data[(a + 1) & 0xFFFF] << 8))
+    hl = (cpu.regs[4] << 8 | cpu.regs[5]) & 0xFFFF  # H, L
+    recent: tuple[Access, ...] = ()
+    if with_recent and mem.track and mem.hot:
+        now = cpu.icount
+        live = [(int(mem.last[a]), a) for a in mem.hot if now - int(mem.last[a]) <= RECENT_WINDOW]
+        live.sort(reverse=True)
+        recent = tuple(Access("R" if mem.kind[a] == 1 else "W", a, data[a], True) for _, a in live[:RECENT_LIMIT])
+        if last is None and recent:
+            last = recent[0].addr
+    return MemView(sp, data[sp], data[(sp + 1) & 0xFFFF], tuple(words), not words, hl, _cells(data, hl), last,
+                   _cells(data, last) if last is not None else (), recent)

@@ -2,7 +2,7 @@
 ;   1) pyinstaller packaging/studio8085.spec --noconfirm        (creates dist\8085Studio\)
 ;   2) iscc packaging\windows\studio8085.iss                     (creates dist\installer\...Setup.exe)
 #define AppName "8085 Studio"
-#define AppVersion "1.1.0"
+#define AppVersion "1.2.0"
 #define AppExe "8085Studio.exe"
 
 [Setup]

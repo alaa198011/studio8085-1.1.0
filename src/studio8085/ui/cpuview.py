@@ -17,23 +17,32 @@ import sys
 import time
 from html import escape
 
-from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPainterPath, QPen, QPolygonF
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QFrame, QGraphicsEllipseItem, QGraphicsItem, QGraphicsObject,
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import (QBrush, QColor, QFont, QFontMetricsF, QKeySequence, QPainter, QPainterPath, QPen, QPolygonF,
+                           QShortcut)
+from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFrame, QGraphicsEllipseItem, QGraphicsItem, QGraphicsObject,
                                QGraphicsPathItem, QGraphicsScene, QGraphicsSimpleTextItem, QGraphicsTextItem, QGraphicsView,
                                QHBoxLayout, QLabel, QPushButton, QSizePolicy, QSplitter, QTabWidget, QTextBrowser, QVBoxLayout,
                                QWidget)
 
-from ..core.visual import (CONCEPTUAL, FLAG_ORDER, PAIRS, REG_ORDER, CpuState, Flow, KitView, StepRecord)
+from ..core.visual import (CONCEPTUAL, FLAG_ORDER, PAIRS, REG_ORDER, CpuState, Flow, KitView, MemView, StepRecord)
 from .cpulabs import LabGuidePanel
 from .docks import mono
+from .icons import make_icon
 from .themes import DARK, Theme
 
 TITLE = "Interactive CPU Architecture"
-SCENE_W, SCENE_H = 1030, 722
+SCENE_W, SCENE_H = 1200, 722
+
+# Text sizes in scene points (the diagram is drawn at 100% zoom in scene units and scaled to fit the panel; the
+# fit never goes below MIN_FIT_SCALE, so at the smallest fit values are >= 12.8 pt and labels >= 10 pt).
+FONT_VALUE = 16.0  # register / PC / SP / flag values
+FONT_LABEL = 12.5  # box titles
+FONT_DETAIL = 11.5  # binary, "was", tags, port lines, memory rows
+FONT_MIN = FONT_DETAIL  # nothing inside a box is drawn smaller than this
 
 # The one-line explanation under the diagram wraps over up to three lines instead of being cut with "...".
-CAPTION_X, CAPTION_Y, CAPTION_W = 34, 657, SCENE_W - 2 * 34
+CAPTION_X, CAPTION_Y, CAPTION_W = 26, 676, SCENE_W - 2 * 26
 
 
 class CaptionItem(QGraphicsTextItem):
@@ -57,19 +66,20 @@ class CaptionItem(QGraphicsTextItem):
 
 
 # ------------------------------------------------------------------ geometry
-_REG_W, _REG_H = 100, 85
+_REG_W, _REG_H = 104, 118
+_REG_Y = 198
 GEOM: dict[str, tuple[float, float, float, float]] = {
-    "IR": (34, 20, 240, 100), "A": (290, 20, 160, 100), "ALU": (500, 20, 160, 100), "FLAGS": (710, 20, 290, 100),
-    "B": (40, 215, _REG_W, _REG_H), "C": (144, 215, _REG_W, _REG_H),
-    "D": (276, 215, _REG_W, _REG_H), "E": (380, 215, _REG_W, _REG_H),
-    "H": (512, 215, _REG_W, _REG_H), "L": (616, 215, _REG_W, _REG_H),
-    "BC": (34, 205, 216, 125), "DE": (270, 205, 216, 125), "HL": (506, 205, 216, 125),
-    "PC": (746, 205, 120, 125), "SP": (880, 205, 120, 125),
-    "MEMIF": (34, 430, 260, 90), "IOIF": (480, 430, 300, 90),
-    "MEM": (34, 570, 410, 80), "PORT_IN": (480, 570, 150, 80), "PORT_OUT": (640, 570, 160, 80),
+    "IR": (26, 10, 290, 122), "A": (328, 10, 160, 122), "ALU": (504, 10, 160, 122), "FLAGS": (680, 10, 506, 122),
+    "B": (34, _REG_Y, _REG_W, _REG_H), "C": (146, _REG_Y, _REG_W, _REG_H),
+    "D": (278, _REG_Y, _REG_W, _REG_H), "E": (390, _REG_Y, _REG_W, _REG_H),
+    "H": (522, _REG_Y, _REG_W, _REG_H), "L": (634, _REG_Y, _REG_W, _REG_H),
+    "BC": (26, 172, 232, 184), "DE": (270, 172, 232, 184), "HL": (514, 172, 232, 184),
+    "PC": (758, 172, 130, 184), "SP": (900, 172, 286, 184),
+    "MEMIF": (26, 410, 748, 48), "IOIF": (790, 410, 396, 48),
+    "MEM": (26, 498, 748, 172), "PORT_IN": (790, 498, 194, 172), "PORT_OUT": (992, 498, 194, 172),
 }
-DATA_Y, ADDR_Y = 170.0, 380.0
-RISER_L, RISER_R, ADDR_RISER = 10.0, 1015.0, 22.0
+DATA_Y, ADDR_Y, MIDY = 146.0, 386.0, 478.0
+RISER_L, RISER_R, ADDR_RISER = 8.0, 1194.0, 17.0
 
 
 def _cx(node: str) -> float:
@@ -85,19 +95,63 @@ def _top(node: str) -> float:
     return GEOM[node][1]
 
 
+PAIR_TITLE_X = 28.0  # the pair's title starts this far inside its frame, to the right of the first register's tap
+_FIRST_REGS, _SECOND_REGS = ("B", "D", "H"), ("C", "E", "L")
+_PAIR_OF_REG = {r: pair for pair, regs in PAIRS.items() for r in regs}
+_LOOP_W = 22.0  # width of a self-loop in a pair's right-hand corner
+# The title may be as wide as the gap between PAIR_TITLE_X and the right-hand corner loop / tap of the second register
+# (less a margin): a wider font shrinks the title (fit_font), it never pushes it onto the arrows.
+PAIR_TITLE_AVAIL = (GEOM["C"][0] + GEOM["C"][2] - 8 - _LOOP_W) - GEOM["BC"][0] - 6 - PAIR_TITLE_X
+
+
+def pair_title_font(nid: str) -> QFont:
+    """The font a pair title is really drawn with (the platform font, shrunk to fit PAIR_TITLE_AVAIL)."""
+    return fit_font(fnt(FONT_DETAIL, bold=True), NODE_INFO[nid][0], PAIR_TITLE_AVAIL)
+
+
+def pair_title_rect(nid: str) -> QRectF:
+    """Scene rectangle of a register pair's title, from the metrics of the font in use: arrows and taps are routed
+    around it, so this holds for any font (DejaVu on Linux is much wider than Segoe UI on Windows)."""
+    gx, gy, _, _ = GEOM[nid]
+    f = pair_title_font(nid)
+    fm = QFontMetricsF(f)
+    return QRectF(gx + PAIR_TITLE_X, gy + 4, fm.horizontalAdvance(NODE_INFO[nid][0]), 22 - 6)
+
+
+def _clear_of_title(reg: str, x0: float, x1: float, margin: float = 6.0) -> bool:
+    """Is the vertical band x0..x1 (scene coordinates) beside the title of the pair that holds ``reg``?"""
+    pair = _PAIR_OF_REG.get(reg)
+    if pair is None:
+        return True
+    t = pair_title_rect(pair)
+    return x1 + margin <= t.left() or x0 - margin >= t.right()
+
+
+def _reg_tap_x(node: str) -> float:
+    """x where a register's line to the data path leaves its box. The first register of a pair (B, D, H) leaves near
+    its left corner, before the pair title. The second (C, E, L) leaves from its middle when that is clear of the
+    title as drawn in the current font, otherwise from its right-hand corner, after the title."""
+    x, _, w, _ = GEOM[node]
+    if node in _FIRST_REGS:
+        return x + 8
+    if node in _SECOND_REGS and not _clear_of_title(node, x + w / 2, x + w / 2):
+        return x + w - 8
+    return x + w / 2
+
+
 def _data_tap(node: str) -> list[QPointF] | None:
     """Points from the node to the 8-bit internal data path, ending ON the bus line."""
     P = QPointF
     if node in ("IR", "A", "ALU", "FLAGS"):
         return [P(_cx(node), _bottom(node)), P(_cx(node), DATA_Y)]
     if node in REG_ORDER[1:]:
-        return [P(_cx(node), _top(node)), P(_cx(node), DATA_Y)]
+        return [P(_reg_tap_x(node), _top(node)), P(_reg_tap_x(node), DATA_Y)]
     if node in PAIRS:
         return [P(_cx(node), _top(node)), P(_cx(node), DATA_Y)]
     if node == "MEM":
-        return [P(100, _top("MEM")), P(100, 545), P(RISER_L, 545), P(RISER_L, DATA_Y)]
+        return [P(100, _top("MEM")), P(100, MIDY), P(RISER_L, MIDY), P(RISER_L, DATA_Y)]
     if node in ("PORT_IN", "PORT_OUT"):
-        return [P(_cx(node), _top(node)), P(_cx(node), 545), P(RISER_R, 545), P(RISER_R, DATA_Y)]
+        return [P(_cx(node), _top(node)), P(_cx(node), MIDY), P(RISER_R, MIDY), P(RISER_R, DATA_Y)]
     return None
 
 
@@ -115,8 +169,8 @@ def _addr_tap(node: str) -> list[QPointF] | None:
 
 
 _DIRECT = {  # (src, dst): (start, end) for the short arrows between neighbouring blocks
-    ("A", "ALU"): ((450, 45), (500, 45)), ("ALU", "A"): ((500, 80), (450, 80)),
-    ("ALU", "FLAGS"): ((660, 45), (710, 45)), ("FLAGS", "ALU"): ((710, 80), (660, 80)),
+    ("A", "ALU"): ((488, 45), (504, 45)), ("ALU", "A"): ((504, 80), (488, 80)),
+    ("ALU", "FLAGS"): ((664, 45), (680, 45)), ("FLAGS", "ALU"): ((680, 80), (664, 80)),
 }
 _ADDR_NODES = {"PC", "SP", "BC", "DE", "HL", "IR", "MEM"}
 
@@ -135,8 +189,15 @@ def route(flow: Flow) -> QPainterPath:
     y = ADDR_Y if use_addr else DATA_Y
     if src == dst:
         x, ya, w, _ = GEOM[src]
-        path.moveTo(x + w * 0.35, ya)
-        path.cubicTo(x + w * 0.35, ya - 26, x + w * 0.65, ya - 26, x + w * 0.65, ya)
+        if src in _FIRST_REGS:  # keep this small loop in the corner, beside the pair title instead of across it
+            path.moveTo(x + 13, ya)
+            path.cubicTo(x + 13, ya - 26, x + 1, ya - 26, x + 1, ya)
+            return path
+        x0, x1 = x + w * 0.35, x + w * 0.65
+        if src in _SECOND_REGS and not _clear_of_title(src, x0, x1):  # the title (in this font) reaches the middle
+            x0, x1 = x + w - 8 - _LOOP_W, x + w - 8  # use the right-hand corner, after the title
+        path.moveTo(x0, ya)
+        path.cubicTo(x0, ya - 22, x1, ya - 22, x1, ya)
         return path
     a, b = tap(src), tap(dst)
     if a is None or b is None:
@@ -220,6 +281,60 @@ class Palette:
 
 
 # --------------------------------------------------------------------- items
+FONT_MEM = 12.0  # memory rows / stack words (mono)
+_AL = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+_AC = Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
+_AR = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+
+
+class TextRec:
+    """One piece of text drawn inside a box (recorded only while ``panel.audit`` is a list: tests check these)."""
+
+    __slots__ = ("nid", "text", "rect", "font")
+
+    def __init__(self, nid: str, text: str, rect: QRectF, font: QFont):
+        self.nid, self.text, self.rect, self.font = nid, text, rect, QFont(font)
+
+    def fits(self) -> bool:
+        fm = QFontMetricsF(self.font)
+        return fm.horizontalAdvance(self.text) <= self.rect.width() + 0.5 and fm.height() <= self.rect.height() + 0.5
+
+
+def fnt(size: float, mono_font: bool = False, bold: bool = False, italic: bool = False) -> QFont:
+    f = mono(10) if mono_font else QFont(QApplication.font())
+    f.setPointSizeF(size)
+    f.setBold(bold)
+    f.setItalic(italic)
+    return f
+
+
+def fit_font(font: QFont, text: str, width: float) -> QFont:
+    """The font itself when the text fits; otherwise shrunk a quarter point at a time, but never below 10.5 pt
+    (13 pt for the big values). So a wider system font shrinks a title slightly instead of clipping it."""
+    floor = 13.0 if font.pointSizeF() >= 14 else 10.5
+    f = QFont(font)
+    fm = QFontMetricsF(f)
+    while fm.horizontalAdvance(text) > width and f.pointSizeF() > floor + 0.01:
+        f.setPointSizeF(max(floor, f.pointSizeF() - 0.25))
+        fm = QFontMetricsF(f)
+    return f
+
+
+def _marks(uses) -> dict[int, str]:
+    out: dict[int, set] = {}
+    for a in uses:
+        out.setdefault(a.addr, set()).add(a.kind)
+    return {k: ("RW" if len(v) == 2 else next(iter(v))) for k, v in out.items()}
+
+
+def access_text(a) -> str:
+    """The one-line text of a memory access (used by the diagram, tooltips and tests)."""
+    if a.kind == "W":
+        old = "??" if a.old is None else f"{a.old:02X}"
+        return f"WRITE {a.addr:04X}h  {old}h -> {a.value:02X}h"
+    return f"READ  {a.addr:04X}h = {a.value:02X}h"
+
+
 class NodeItem(QGraphicsObject):
     """One block of the diagram. Focusable (Tab / arrow keys), has a tooltip, and shows state as text + outline."""
 
@@ -245,8 +360,12 @@ class NodeItem(QGraphicsObject):
         self.flags_changed: frozenset[str] = frozenset()
         self.tag = ""
         self.masked = False
+        self.hide_contents = False  # Experiment 1 before the prediction: no memory / stack values at all
         self.leds: int | None = None  # 8-bit pattern drawn as dots (output port node)
         self.decimal = False
+        self.uses: tuple = ()  # this step's memory accesses (MEM node)
+        self.mv: MemView | None = None  # memory / stack snapshot (MEM and SP nodes)
+        self.mem_note = ""
         title, desc = NODE_INFO.get(nid, (nid, ""))
         self.title = title
         self.setToolTip(f"{title}\n{desc}")
@@ -254,6 +373,44 @@ class NodeItem(QGraphicsObject):
 
     def boundingRect(self) -> QRectF:
         return self.rect.adjusted(-4, -4, 4, 4)
+
+    # ------------------------------------------------- memory / stack model
+    def mem_lines(self) -> list[str]:
+        """Rows of the Memory area for this step, as text. Single source for drawing, tooltip and tests."""
+        if self.hide_contents:
+            return ["hidden until you predict"]
+        rows = [access_text(a) for a in self.uses[:4]]
+        if len(self.uses) > 4:
+            rows[-1] = f"+{len(self.uses) - 3} more accesses"
+        return rows or [self.mem_note or "64K bytes, 0000h-FFFFh"]
+
+    def recent_text(self) -> str:
+        mv = self.mv
+        if self.hide_contents or mv is None or not mv.recent:
+            return ""
+        return " ".join(f"{a.kind}{a.addr:04X}" for a in mv.recent[:4])
+
+    def strips(self) -> list[tuple[str, list[tuple[int, int, str]]]]:
+        """[(caption, [(addr, value, mark)])]: the cells around HL (M) and around the last accessed address."""
+        mv = self.mv
+        if self.hide_contents or mv is None:
+            return []
+        marks = _marks(self.uses)
+        out = [(f"around HL (M) = {mv.hl:04X}h", [(a, v, marks.get(a, "")) for a, v in mv.hl_cells])]
+        if mv.last is not None:
+            out.append((f"around last access = {mv.last:04X}h", [(a, v, marks.get(a, "")) for a, v in mv.last_cells]))
+        return out
+
+    def sp_lines(self) -> tuple[list[str], list[str]]:
+        """(left column rows, stack rows) of the SP box: [SP], [SP+1], the word, and the top words."""
+        if self.hide_contents:
+            return ["contents hidden", "until you predict"], []
+        mv, val = self.mv, self.value
+        if mv is None or val is None or val[0] != mv.sp:
+            return ["[SP]   = ??", "[SP+1] = ??", "word   = ????"], []
+        left = [f"[SP]   = {mv.sp_lo:02X}h", f"[SP+1] = {mv.sp_hi:02X}h", f"word   = {mv.sp_word:04X}h"]
+        stack = [f"{'>' if i == 0 else ' '} {a:04X} {w:04X}h" for i, (a, w) in enumerate(mv.stack)] or ["(stack empty)"]
+        return left, stack
 
     # state --------------------------------------------------------------
     def describe(self) -> str:
@@ -274,6 +431,16 @@ class NodeItem(QGraphicsObject):
         if self.tag:
             parts.append(self.tag)
         parts.extend(self.extra)
+        if self.nid == "MEM":
+            parts.extend(self.mem_lines())
+            rt = self.recent_text()
+            if rt:
+                parts.append("recent " + rt)
+            for cap, cells in self.strips():
+                parts.append(cap + ": " + ", ".join(f"{a:04X}h={v:02X}h{(' ' + m) if m else ''}" for a, v, m in cells))
+        if self.nid == "SP":
+            left, stack = self.sp_lines()
+            parts.extend(left + [t.strip() for t in stack])
         if self.nid in _CONCEPTUAL_NODES:
             parts.append("conceptual block")
         return ". ".join(parts)
@@ -302,6 +469,18 @@ class NodeItem(QGraphicsObject):
             super().keyPressEvent(e)
 
     # painting -----------------------------------------------------------
+    def _t(self, p: QPainter, x: float, y: float, w: float, h: float, s: str, font: QFont, align=_AL):
+        """Draw one line of text in a rectangle (never elided) and record it for the tests."""
+        if not s:
+            return
+        r = QRectF(x, y, w, h)
+        font = fit_font(font, s, w)
+        p.setFont(font)
+        p.drawText(r, align, s)
+        audit = self.panel.audit
+        if audit is not None:
+            audit.append(TextRec(self.nid, s, r, font))
+
     def paint(self, p: QPainter, _opt, _w=None):
         pal = self.pal
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
@@ -340,129 +519,168 @@ class NodeItem(QGraphicsObject):
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRoundedRect(r.adjusted(-3, -3, 3, 3), 9, 9)
         p.setPen(text)
-        tf = QFont(p.font())
-        tf.setBold(True)
-        tf.setPointSizeF(10)
-        p.setFont(tf)
+        W = r.width()
+        lf = fnt(FONT_LABEL, bold=True)
+        df = fnt(FONT_DETAIL)
+        dm = fnt(FONT_DETAIL, True)
+        vf = fnt(FONT_VALUE, True, True)
         short = {"A": "Accumulator A", "ALU": "ALU", "IR": "Instruction Register / Decoder",
-                 "MEMIF": "Memory interface", "IOIF": "I/O interface", "MEM": "Memory (64K x 8)",
-                 "PC": "PC", "SP": "SP", "FLAGS": "Flags"}.get(self.nid, self.nid)
+                 "MEMIF": "Memory interface (conceptual)", "IOIF": "I/O interface (conceptual)",
+                 "MEM": "Memory (64K x 8)", "PC": "PC", "SP": "SP  Stack Pointer",
+                 "FLAGS": "Flags"}.get(self.nid, self.nid)
         if self.nid in ("PORT_IN", "PORT_OUT"):
             short = self.title
-        p.drawText(QRectF(8, 4, r.width() - (12 if len(short) > 6 and self.nid not in ("PORT_IN", "PORT_OUT") else 54), 20), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, short)
-        # role / change badges: text, so the meaning never depends on colour
-        badge = []
-        if self.role:
-            badge.append(_ROLE_TAG[self.role])
-        if self.changed:
-            badge.append("Δ")
+        # role / change badges are text, so the meaning never depends on colour; on top if the title leaves room
+        badge = " ".join(([_ROLE_TAG[self.role]] if self.role else []) + (["Δ"] if self.changed else []))
+        bf = fnt(FONT_DETAIL, bold=True)
+        tw = QFontMetricsF(lf).horizontalAdvance(short)
+        bw = QFontMetricsF(bf).horizontalAdvance(badge) if badge else 0
+        top_badge = tw + bw + 24 <= W
+        self._t(p, 8, 4, W - 16 - (bw + 8 if badge and top_badge else 0), 22, short, lf)
         if badge:
-            bf = QFont(p.font())
-            bf.setPointSizeF(8)
-            p.setFont(bf)
-            long_title = len(short) > 6 and self.nid not in ("PORT_IN", "PORT_OUT")
-            by = r.height() - 20 if long_title else 4
-            p.drawText(QRectF(r.width() - 78, by, 72, 18), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-                       " ".join(badge))
-        mf = mono(10)
-        mf.setBold(True)
-        small = mono(8)
-        y = 26.0
-        p.setFont(mf)
+            self._t(p, W - bw - 10, 4 if top_badge else r.height() - 24, bw + 4, 20, badge, bf, _AR)
         if self.nid == "IR":
-            p.setFont(small)
-            p.drawText(QRectF(8, 24, r.width() - 16, 18), Qt.AlignmentFlag.AlignLeft, "conceptual - not a simulated circuit")
-            p.setFont(mf)
-            p.drawText(QRectF(8, 44, r.width() - 16, 20), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                       self.extra[0] if self.extra else "")
-            p.setFont(small)
+            self._t(p, 8, 28, W - 16, 20, "conceptual - not a simulated circuit", df)
+            first = self.extra[0] if self.extra else ""
+            self._t(p, 8, 48, W - 16, 26, first, fnt(13.5, True, True))
             for i, line in enumerate(self.extra[1:3]):
-                p.drawText(QRectF(8, 66 + 14 * i, r.width() - 16, 14), Qt.AlignmentFlag.AlignLeft, line)
+                self._t(p, 8, 76 + 20 * i, W - 16, 20, line, dm)
             return
         if self.nid == "FLAGS":
-            self._paint_flags(p, mf, small, text)
+            self._paint_flags(p, text)
             return
         if self.nid in ("MEMIF", "IOIF", "ALU"):
-            p.setFont(small)
-            for i, line in enumerate(self.extra[:4] or ([""] if self.nid != "ALU" else ["arithmetic + logic"])):
-                p.drawText(QRectF(8, 28 + 15 * i, r.width() - 16, 15), Qt.AlignmentFlag.AlignLeft, line)
-            if self.nid in ("MEMIF", "IOIF"):
-                p.drawText(QRectF(8, r.height() - 20, r.width() - 16, 16), Qt.AlignmentFlag.AlignLeft,
-                           "conceptual block")
-            elif self.tag:
-                p.setFont(mf)
-                p.drawText(QRectF(8, 50, r.width() - 16, 20), Qt.AlignmentFlag.AlignLeft, self.tag)
+            for line in self.extra[:1] or ([""] if self.nid != "ALU" else ["arithmetic + logic"]):
+                self._t(p, 8, 26, W - 16, 20, line, df)
+            if self.nid == "ALU" and self.tag:
+                self._t(p, 8, 54, W - 16, 28, self.tag, vf)
             return
-        if self.nid in ("MEM", "PORT_IN", "PORT_OUT"):
-            self._paint_endpoint(p, mf, small)
+        if self.nid == "MEM":
+            self._paint_memory(p, df, dm)
             return
-        # registers / pairs / PC / SP
+        if self.nid in ("PORT_IN", "PORT_OUT"):
+            self._paint_endpoint(p, dm)
+            return
+        if self.nid == "SP":
+            self._paint_sp(p, df, dm, vf)
+            return
+        # registers / pairs / PC
+        y = 28.0
         if self.masked:
-            p.drawText(QRectF(8, y, r.width() - 16, 20), Qt.AlignmentFlag.AlignLeft, "??")
-            p.setFont(small)
-            p.drawText(QRectF(8, y + 22, r.width() - 16, 14), Qt.AlignmentFlag.AlignLeft, "hidden until you predict")
+            self._t(p, 8, y, W - 16, 28, "??", vf)
+            self._t(p, 8, y + 30, W - 12, 20, "hidden until", df)
+            self._t(p, 8, y + 50, W - 12, 20, "you predict", df)
             return
         if self.value is not None:
             v, b = self.value
-            p.drawText(QRectF(8, y, r.width() - 16, 20), Qt.AlignmentFlag.AlignLeft, hexs(v, b))
-            p.setFont(small)
+            self._t(p, 8, y, W - 16, 28, hexs(v, b), vf)
             if b == 8:
-                p.drawText(QRectF(8, y + 22, r.width() - 12, 14), Qt.AlignmentFlag.AlignLeft, bins(v, b))
-                yy = y + 38
+                self._t(p, 8, y + 28, W - 12, 20, bins(v, b), dm)
+                yy = y + 48
             else:
-                p.drawText(QRectF(8, y + 22, r.width() - 12, 14), Qt.AlignmentFlag.AlignLeft, bins(v >> 8, 8))
-                p.drawText(QRectF(8, y + 36, r.width() - 12, 14), Qt.AlignmentFlag.AlignLeft, bins(v & 255, 8))
-                yy = y + 52
+                self._t(p, 8, y + 28, W - 12, 20, bins(v >> 8, 8), dm)
+                self._t(p, 8, y + 48, W - 12, 20, bins(v & 255, 8), dm)
+                yy = y + 68
             if self.decimal:
-                p.drawText(QRectF(8, yy, r.width() - 12, 14), Qt.AlignmentFlag.AlignLeft, f"= {v}")
-                yy += 14
-            if self.changed and self.old is not None and r.height() - yy >= 12:
-                p.drawText(QRectF(8, yy, r.width() - 12, 14), Qt.AlignmentFlag.AlignLeft, f"was {hexs(self.old, b)}")
-            if self.tag and r.height() - yy >= 12 and not (self.changed and self.old is not None):
-                p.drawText(QRectF(8, yy, r.width() - 12, 14), Qt.AlignmentFlag.AlignLeft, self.tag)
+                self._t(p, 8, yy, W - 12, 20, f"= {v}", dm)
+                yy += 20
+            if self.changed and self.old is not None and r.height() - yy >= 20:
+                self._t(p, 8, yy, W - 12, 20, f"was {hexs(self.old, b)}", dm)
+                yy += 20
+            elif self.tag and r.height() - yy >= 20:
+                self._t(p, 8, yy, W - 12, 20, self.tag, dm)
 
-    def _paint_flags(self, p: QPainter, mf: QFont, small: QFont, text: QColor):
+    def _paint_sp(self, p: QPainter, df: QFont, dm: QFont, vf: QFont):
+        r = self.rect
+        W = r.width()
+        if self.value is None:
+            return
+        v, _b = self.value
+        self._t(p, 8, 28, 140, 28, hexs(v, 16), vf)
+        if self.changed and self.old is not None:
+            self._t(p, 8, 56, 140, 20, f"was {hexs(self.old, 16)}", dm)
+        elif self.tag:
+            self._t(p, 8, 56, 140, 20, self.tag, dm)
+        left, stack = self.sp_lines()
+        mf = fnt(FONT_MEM, True)
+        for i, line in enumerate(left):
+            self._t(p, 8, 78 + 20 * i, 146, 20, line, mf)
+        if stack:
+            self._t(p, 160, 28, W - 168, 20, "stack, top is >", df)
+            for i, line in enumerate(stack[:4]):
+                self._t(p, 160, 48 + 20 * i, W - 168, 20, line, fnt(FONT_DETAIL, True, i == 0))
+        if not self.hide_contents:
+            self._t(p, 8, r.height() - 28, W - 16, 22, "low byte at SP, high byte at SP+1", df)
+
+    def _paint_memory(self, p: QPainter, df: QFont, dm: QFont):
+        pal = self.pal
+        mf = fnt(FONT_MEM, True, True)
+        self._t(p, 8, 28, 300, 20, "" if self.hide_contents else "this step:", fnt(FONT_DETAIL, bold=True))
+        for i, line in enumerate(self.mem_lines()):
+            access = line.startswith(("WRITE", "READ"))
+            self._t(p, 8, 48 + 20 * i, 300, 20, line, mf if access else df)
+        rt = self.recent_text()
+        if rt:
+            self._t(p, 8, 130, 300, 20, "recently used (R read, W write):", df)
+            self._t(p, 8, 150, 300, 20, rt, dm)
+        x0, cw = 322.0, 84.0
+        y = 28.0
+        for cap, cells in self.strips():
+            self._t(p, x0, y, 420, 20, cap, df)
+            for i, (a, v, mark) in enumerate(cells):
+                box = QRectF(x0 + i * cw, y + 20, cw - 4, 44)
+                key = "heat_write" if "W" in mark else "heat_read"
+                p.setPen(QPen(pal.c(key) if mark else pal.c("border"), 3 if mark else 1))
+                if mark:
+                    fill = QColor(pal.c(key))
+                    fill.setAlpha(60)
+                    p.setBrush(QBrush(_over(pal.c("panel"), fill)))
+                else:
+                    p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawRoundedRect(box, 4, 4)
+                p.setPen(pal.c("text"))
+                hl = " HL" if self.mv is not None and a == self.mv.hl else ""
+                self._t(p, box.x() + 4, box.y() + 2, box.width() - 8, 18, f"{a:04X}{hl}", dm)
+                self._t(p, box.x() + 4, box.y() + 20, box.width() - 8, 22, f"{mark} {v:02X}h".lstrip(), mf)
+            y += 74
+
+    def _paint_flags(self, p: QPainter, text: QColor):
         pal = self.pal
         r = self.rect
         n = len(FLAG_ORDER)
         cw = (r.width() - 16) / n
         for i, name in enumerate(FLAG_ORDER):
             x = 8 + i * cw
-            box = QRectF(x + 3, 30, cw - 6, 62)
+            box = QRectF(x + 3, 30, cw - 6, 86)
             chg = name in self.flags_changed
             p.setPen(QPen(pal.c("exec_arrow") if chg else pal.c("border"), 3 if chg else 1))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRoundedRect(box, 5, 5)
             p.setPen(text)
-            p.setFont(small)
-            p.drawText(QRectF(box.x(), box.y() + 3, box.width(), 14), Qt.AlignmentFlag.AlignHCenter,
-                       name + (" Δ" if chg else ""))
-            p.setFont(mf)
+            self._t(p, box.x(), box.y() + 3, box.width(), 22, name + (" Δ" if chg else ""), fnt(FONT_LABEL, bold=True), _AC)
             val = "?" if self.masked or self.flags_vals is None else str(self.flags_vals[i])
-            p.drawText(QRectF(box.x(), box.y() + 20, box.width(), 22), Qt.AlignmentFlag.AlignHCenter, val)
-            p.setFont(small)
+            self._t(p, box.x(), box.y() + 26, box.width(), 28, val, fnt(FONT_VALUE, True, True), _AC)
             on = self.flags_vals is not None and not self.masked and self.flags_vals[i]
-            p.drawText(QRectF(box.x(), box.y() + 44, box.width(), 14), Qt.AlignmentFlag.AlignHCenter,
-                       "set" if on else "clear" if not self.masked else "")
+            self._t(p, box.x(), box.y() + 58, box.width(), 22, "set" if on else "clear" if not self.masked else "",
+                    fnt(FONT_DETAIL), _AC)
 
-    def _paint_endpoint(self, p: QPainter, mf: QFont, small: QFont):
+    def _paint_endpoint(self, p: QPainter, dm: QFont):
         r = self.rect
-        p.setFont(small)
         lines = self.extra[:2] if self.leds is not None else self.extra[:3]
         if self.masked:
-            lines = ["hidden until predicted"]
+            lines = ["hidden until", "you predict"]
         for i, line in enumerate(lines):
-            p.drawText(QRectF(8, 26 + 14 * i, r.width() - 12, 14), Qt.AlignmentFlag.AlignLeft, line)
+            self._t(p, 8, 28 + 20 * i, r.width() - 12, 20, line, dm)
         if self.leds is not None and not self.masked:  # eight LED dots: filled = lit (shape, not just colour)
             on, off = self.pal.c("led_on"), self.pal.c("led_off")
             for i, bit in enumerate(range(7, -1, -1)):
                 lit = self.leds >> bit & 1
                 p.setPen(QPen(self.pal.c("text"), 1))
                 p.setBrush(QBrush(on if lit else off))
-                p.drawEllipse(QRectF(8 + i * 17, 62, 12, 12))
+                p.drawEllipse(QRectF(8 + i * 22, 100, 16, 16))
                 if not lit:
                     p.setBrush(Qt.BrushStyle.NoBrush)
-                    p.drawEllipse(QRectF(8 + i * 17 + 4, 66, 4, 4))
+                    p.drawEllipse(QRectF(8 + i * 22 + 5, 105, 6, 6))
 
 
 def _over(base: QColor, top: QColor) -> QColor:
@@ -474,9 +692,9 @@ def _over(base: QColor, top: QColor) -> QColor:
 class PairFrame(QGraphicsObject):
     """The frame around B+C / D+E / H+L with the 16-bit pair value in its bottom strip."""
 
-    def __init__(self, nid: str, pal: Palette):
+    def __init__(self, nid: str, pal: Palette, panel: "CpuArchitecturePanel"):
         super().__init__()
-        self.nid, self.pal = nid, pal
+        self.nid, self.pal, self.panel = nid, pal, panel
         x, y, w, h = GEOM[nid]
         self.rect = QRectF(0, 0, w, h)
         self.setPos(x, y)
@@ -496,6 +714,14 @@ class PairFrame(QGraphicsObject):
             setattr(self, k, v)
         self.update()
 
+    def _t(self, p, x, y, w, h, s, font, align=_AL):
+        r = QRectF(x, y, w, h)
+        font = fit_font(font, s, w)
+        p.setFont(font)
+        p.drawText(r, align, s)
+        if self.panel.audit is not None:
+            self.panel.audit.append(TextRec(self.nid, s, r, font))
+
     def paint(self, p: QPainter, _o, _w=None):
         pal = self.pal
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
@@ -508,15 +734,15 @@ class PairFrame(QGraphicsObject):
         p.setBrush(QBrush(pal.c("alt_base")))
         p.drawRoundedRect(self.rect, 9, 9)
         p.setPen(pal.c("text"))
-        f = mono(10)
-        f.setBold(True)
-        p.setFont(f)
         val = "????h" if self.masked or self.value is None else hexs(self.value, 16)
         label = f"{self.nid} = {val}" + (f"  ({self.value})" if self.decimal and self.value is not None and not self.masked else "")
-        tag = (" " + _ROLE_TAG[self.role]) if self.role else ""
-        tag += " Δ" if self.changed else ""
-        p.drawText(QRectF(8, self.rect.height() - 25, self.rect.width() - 16, 22),
-                   Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, label + tag)
+        tag = " ".join(([_ROLE_TAG[self.role]] if self.role else []) + (["Δ"] if self.changed else []))
+        bf = fnt(FONT_DETAIL, bold=True)
+        self._t(p, PAIR_TITLE_X, 4, PAIR_TITLE_AVAIL, 22, NODE_INFO[self.nid][0], bf)
+        if tag:
+            bw = QFontMetricsF(bf).horizontalAdvance(tag)
+            self._t(p, self.rect.width() - bw - 10, 4, bw + 4, 22, tag, bf, _AR)
+        self._t(p, 8, self.rect.height() - 34, self.rect.width() - 16, 28, label, fnt(13.5, True, True))
 
 
 class FlowItem(QGraphicsPathItem):
@@ -603,10 +829,58 @@ class DiagramView(QGraphicsView):
             super().keyPressEvent(e)
 
 
+class EnlargedWindow(QWidget):
+    """A plain top-level window that hosts the CPU panel while it is enlarged. Closing it (title-bar button or Esc)
+    asks the owner to hand the panel back to its dock."""
+
+    closed = Signal()
+
+    def __init__(self, panel: QWidget, title: str):
+        super().__init__(None, Qt.WindowType.Window)
+        self.setWindowTitle(title)
+        self.setObjectName("cpuview_enlarged")
+        self._panel = panel
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(panel)
+        self._released = False
+        self._actions: list = []
+
+    def set_actions(self, actions):
+        """Lend the main window's run/step actions to this separate top-level window, so F5/F10/F11... still work."""
+        for a in actions:
+            self.addAction(a)
+        self._actions = list(actions)
+
+    def release(self):
+        """Give the panel up (the caller re-parents it) without emitting ``closed``."""
+        self._released = True
+        for a in self._actions:
+            self.removeAction(a)
+        self._actions = []
+        self.layout().removeWidget(self._panel)
+        self._panel.setParent(None)
+        self.hide()
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key.Key_Escape:
+            self.closed.emit()
+        else:
+            super().keyPressEvent(e)
+
+    def closeEvent(self, e):
+        if not self._released:
+            e.ignore()  # the owner restores the layout, then drops this window
+            self.closed.emit()
+        else:
+            super().closeEvent(e)
+
+
 # ---------------------------------------------------------------- the panel
+ZOOM_CHOICES = [("Fit", 0.0), ("100%", 1.0), ("125%", 1.25), ("150%", 1.5), ("200%", 2.0)]
 SPEEDS = [("0.5x (slow)", 0.5), ("1x", 1.0), ("2x", 2.0), ("4x (fast)", 4.0)]
 PHASE_MS = 650
-MIN_FIT_SCALE = 0.55
+MIN_FIT_SCALE = 0.8  # below this the labels would stop being readable: the diagram scrolls instead
 LIVE_INTERVAL = 0.10  # seconds: coalesce live refreshes while a program runs
 
 
@@ -616,6 +890,7 @@ class CpuArchitecturePanel(QWidget):
     explain_changed = Signal(bool)
     settings_changed = Signal()
     visible_changed = Signal(bool)
+    enlarge_requested = Signal(bool)  # True: show this panel in a maximized window; False: restore the layout
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -638,7 +913,11 @@ class CpuArchitecturePanel(QWidget):
         self._last_live = 0.0
         self._pending_live: CpuState | None = None
         self.redraws = 0
-        self.setMinimumSize(520, 420)
+        self.audit: list | None = None  # tests: a list collects every text drawn in a box (see TextRec)
+        self._mv: MemView | None = None
+        self._zoom_pref = 0.0  # 0 = fit the panel (persisted "diagram size")
+        self.enlarged = False
+        self.setMinimumSize(300, 420)  # the header controls wrap onto more rows when the panel is narrow
 
         self.scene = QGraphicsScene(0, 0, SCENE_W, SCENE_H, self)
         self.view = DiagramView(self.scene)
@@ -683,32 +962,59 @@ class CpuArchitecturePanel(QWidget):
         self.replay_btn = QPushButton("Replay")
         self.replay_btn.setToolTip("Replay the last captured step. The CPU is not executed again.")
         self.replay_btn.clicked.connect(self.replay)
-        self.zoom_out_btn = QPushButton("−")
+        self.zoom_out_btn = QPushButton()
         self.zoom_out_btn.setAccessibleName("Zoom out")
-        self.zoom_out_btn.setToolTip("Zoom out (also - key or Ctrl+wheel)")
+        self.zoom_out_btn.setToolTip("Zoom out (Ctrl+- while this panel has the focus, also the - key or Ctrl+wheel)")
         self.zoom_out_btn.clicked.connect(lambda: self.zoom_by(1 / 1.15))
-        self.zoom_in_btn = QPushButton("+")
+        self.zoom_in_btn = QPushButton()
         self.zoom_in_btn.setAccessibleName("Zoom in")
-        self.zoom_in_btn.setToolTip("Zoom in (also + key or Ctrl+wheel)")
+        self.zoom_in_btn.setToolTip("Zoom in (Ctrl+= while this panel has the focus, also the + key or Ctrl+wheel)")
         self.zoom_in_btn.clicked.connect(lambda: self.zoom_by(1.15))
-        self.fit_btn = QPushButton("Fit")
-        self.fit_btn.setToolTip("Fit the diagram to the panel (also 0 key)")
+        self.fit_btn = QPushButton()
+        self.fit_btn.setAccessibleName("Fit the diagram to the panel")
+        self.fit_btn.setToolTip("Fit the diagram to the panel (Ctrl+0, also the 0 key)")
         self.fit_btn.clicked.connect(lambda: self.zoom_by(0.0))
-        for b in (self.zoom_out_btn, self.zoom_in_btn):
-            b.setFixedWidth(34)
-        row1 = QHBoxLayout()
-        for w in (self.explain_cb, self.anim_cb, self.reduce_cb, self.dec_cb):
-            row1.addWidget(w)
-        row1.addStretch(1)
-        row2 = QHBoxLayout()
-        row2.addWidget(QLabel("Speed:"))
-        row2.addWidget(self.speed_combo)
-        for w in (self.pause_btn, self.skip_btn, self.replay_btn):
-            row2.addWidget(w)
-        row2.addStretch(1)
-        row2.addWidget(self.zoom_out_btn)
-        row2.addWidget(self.zoom_in_btn)
-        row2.addWidget(self.fit_btn)
+        self.max_btn = QPushButton()
+        self.max_btn.setAccessibleName("Enlarge the CPU Architecture view and labs")
+        self.max_btn.setToolTip("Enlarge the CPU Architecture view and the labs to a full window (Ctrl+Shift+F). "
+                                "Press Esc or the same button to go back.")
+        self.max_btn.clicked.connect(self.toggle_enlarged)
+        self.size_combo = QComboBox()
+        self.size_combo.setAccessibleName("Diagram size")
+        self.size_combo.setToolTip("Diagram size: Fit shrinks or grows the diagram to the panel; a percentage keeps "
+                                   "the text at that size (the diagram scrolls). Remembered between sessions.")
+        for label, v in ZOOM_CHOICES:
+            self.size_combo.addItem(label, v)
+        self.size_combo.currentIndexChanged.connect(self._size_chosen)
+        for b in (self.zoom_out_btn, self.zoom_in_btn, self.fit_btn, self.max_btn):
+            b.setFixedSize(36, 30)
+            b.setIconSize(QSize(22, 22))
+        # keyboard shortcuts work anywhere inside the panel (also when it floats or is enlarged)
+        self._shortcuts = []
+        self._zoom_shortcuts = []
+        for keys, fn in (("Ctrl+Shift+F", self.toggle_enlarged), ("Ctrl+=", lambda: self.zoom_by(1.15)),
+                         ("Ctrl++", lambda: self.zoom_by(1.15)), ("Ctrl+-", lambda: self.zoom_by(1 / 1.15)),
+                         ("Ctrl+0", lambda: self.zoom_by(0.0)), ("Esc", self._escape)):
+            sc = QShortcut(QKeySequence(keys), self)
+            sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            sc.activated.connect(fn)
+            self._shortcuts.append(sc)
+            if keys in ("Ctrl+=", "Ctrl++", "Ctrl+-"):
+                self._zoom_shortcuts.append(sc)
+            if keys == "Esc":
+                self._esc_shortcut = sc
+                sc.setEnabled(False)  # Esc only means "back" while enlarged; otherwise it stays free (Find bar)
+        # The header is two groups of controls: (left items | right items). It is laid out by _reflow_header():
+        # at a normal width that is exactly two rows; in a narrow dock the items wrap onto more rows instead of
+        # being cut off, so every control stays reachable.
+        self._size_lbl, self._speed_lbl = QLabel("Size:"), QLabel("Speed:")
+        self._header_groups = [
+            ([self.explain_cb, self.anim_cb, self.reduce_cb, self.dec_cb], [self._size_lbl, self.size_combo]),
+            ([self._speed_lbl, self.speed_combo, self.pause_btn, self.skip_btn, self.replay_btn],
+             [self.zoom_out_btn, self.zoom_in_btn, self.fit_btn, self.max_btn])]
+        self.header = QVBoxLayout()
+        self.header.setSpacing(4)
+        self._header_sig = None
 
         self.status = QLabel()
         self.status.setWordWrap(True)
@@ -725,14 +1031,14 @@ class CpuArchitecturePanel(QWidget):
         self.split = QSplitter(Qt.Orientation.Vertical)
         self.split.addWidget(self.view)
         self.split.addWidget(self.tabs)
-        self.split.setStretchFactor(0, 3)
+        self.split.setStretchFactor(0, 5)
         self.split.setStretchFactor(1, 2)
+        self.split.setSizes([640, 150])
         self.split.setChildrenCollapsible(False)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(6, 6, 6, 6)
-        lay.addLayout(row1)
-        lay.addLayout(row2)
+        lay.addLayout(self.header)
         lay.addWidget(self.split, 1)
         lay.addWidget(self.status)
 
@@ -743,6 +1049,7 @@ class CpuArchitecturePanel(QWidget):
         self._live_timer.setSingleShot(True)
         self._live_timer.timeout.connect(self._flush_live)
         self.setTabOrder(self.explain_cb, self.anim_cb)
+        self._reflow_header()
         self.set_theme(None)
         self._update_buttons()
         self._show_idle()
@@ -754,7 +1061,7 @@ class CpuArchitecturePanel(QWidget):
         self.nodes.clear()
         self.frames.clear()
         for nid in ("BC", "DE", "HL"):
-            f = PairFrame(nid, self.pal)
+            f = PairFrame(nid, self.pal, self)
             self.scene.addItem(f)
             self.frames[nid] = f
         order = ["IR", "A", "ALU", "FLAGS", "B", "C", "D", "E", "H", "L", "PC", "SP", "MEMIF", "IOIF", "MEM",
@@ -790,24 +1097,25 @@ class CpuArchitecturePanel(QWidget):
             self._static_items.append(it)
 
         line([P(RISER_L, DATA_Y), P(RISER_R, DATA_Y)], pen)  # 8-bit data path
-        line([P(ADDR_RISER, ADDR_Y), P(1000, ADDR_Y)], pen)  # 16-bit address path
+        line([P(ADDR_RISER, ADDR_Y), P(1180, ADDR_Y)], pen)  # 16-bit address path
         for nid in ("IR", "A", "ALU", "FLAGS", "B", "C", "D", "E", "H", "L", "MEM", "PORT_IN", "PORT_OUT"):
             line(_data_tap(nid), thin)
         for nid in ("PC", "SP", "BC", "DE", "HL", "MEM", "IR"):
             line(_addr_tap(nid), thin)
-        line([P(RISER_L, 545), P(RISER_L, 475), P(34, 475)], thin)  # data to the memory interface
-        line([P(160, 430), P(160, ADDR_Y)], thin)
-        line([P(780, 475), P(RISER_R, 475)], thin)
-        line([P(RISER_R, DATA_Y), P(RISER_R, 545)], thin)
-        line([P(630, 430), P(630, ADDR_Y)], thin)
-        line([P(555, 520), P(555, 570)], thin)
-        line([P(720, 520), P(720, 570)], thin)
-        line([P(100, 520), P(100, 570)], thin)
-        for text, x, y in (("8-bit internal data path (conceptual)", 735, 174),
-                           ("16-bit address path (conceptual)", 650, 384)):
+        mif_y = GEOM["MEMIF"][1] + GEOM["MEMIF"][3] / 2
+        line([P(RISER_L, MIDY), P(RISER_L, mif_y), P(GEOM["MEMIF"][0], mif_y)], thin)  # data to the memory interface
+        line([P(160, GEOM["MEMIF"][1]), P(160, ADDR_Y)], thin)
+        line([P(GEOM["IOIF"][0] + GEOM["IOIF"][2], mif_y), P(RISER_R, mif_y)], thin)
+        line([P(RISER_R, DATA_Y), P(RISER_R, MIDY)], thin)
+        line([P(990, GEOM["IOIF"][1]), P(990, ADDR_Y)], thin)
+        for nid in ("PORT_IN", "PORT_OUT"):
+            line([P(_cx(nid), GEOM["IOIF"][1] + GEOM["IOIF"][3]), P(_cx(nid), _top(nid))], thin)
+        line([P(100, GEOM["MEMIF"][1] + GEOM["MEMIF"][3]), P(100, _top("MEM"))], thin)
+        for text, x, y in (("8-bit internal data path (conceptual)", 820, DATA_Y + 3),
+                           ("16-bit address path (conceptual)", 820, ADDR_Y + 3)):
             t = QGraphicsSimpleTextItem(text)
             f = QFont(t.font())
-            f.setPointSizeF(9)
+            f.setPointSizeF(FONT_MIN - 1.0)
             f.setItalic(True)
             t.setFont(f)
             t.setBrush(QBrush(pal.c("text_dim")))
@@ -829,18 +1137,25 @@ class CpuArchitecturePanel(QWidget):
             fi.restyle(self.pal)
         self.caption.setBrush(QBrush(self.pal.c("text")))
         cf = QFont(self.caption.font())
-        cf.setPointSizeF(10)
+        cf.setPointSizeF(FONT_DETAIL)
         cf.setBold(True)
         self.caption.setFont(cf)
         self.scene.setBackgroundBrush(QBrush(self.pal.c("base")))
+        self._icons()
         self.scene.update()
+
+    def _icons(self):
+        c, d = self.pal.c("text"), self.pal.c("text_dim")
+        for btn, name in ((self.zoom_out_btn, "zoom_out"), (self.zoom_in_btn, "zoom_in"), (self.fit_btn, "fit"),
+                          (self.max_btn, "restore" if self.enlarged else "expand")):
+            btn.setIcon(make_icon(name, c, d, 22))
 
     # --------------------------------------------------------- settings
     def settings(self) -> dict:
         return {"explain": self.explain_mode, "animate": self.animate, "reduce_motion": self.reduce_motion,
-                "decimal": self.decimal, "speed": self.speed}
+                "decimal": self.decimal, "speed": self.speed, "zoom": self._zoom_pref}
 
-    def apply_settings(self, explain=True, animate=True, reduce_motion=None, decimal=False, speed=1.0):
+    def apply_settings(self, explain=True, animate=True, reduce_motion=None, decimal=False, speed=1.0, zoom=0.0):
         for cb, v in ((self.explain_cb, explain), (self.anim_cb, animate), (self.dec_cb, decimal)):
             cb.blockSignals(True)
             cb.setChecked(bool(v))
@@ -856,7 +1171,30 @@ class CpuArchitecturePanel(QWidget):
         self.speed_combo.setCurrentIndex(i if i >= 0 else 1)
         self.speed_combo.blockSignals(False)
         self.speed = float(self.speed_combo.currentData())
+        self._set_zoom_pref(float(zoom), save=False)
         self._redraw()
+
+    def _set_zoom_pref(self, z: float, save: bool = True):
+        i = self.size_combo.findData(z)
+        if i < 0:
+            i = 0 if z <= 0 else min(range(len(ZOOM_CHOICES)), key=lambda k: abs(ZOOM_CHOICES[k][1] - z))
+        self.size_combo.blockSignals(True)
+        self.size_combo.setCurrentIndex(i)
+        self.size_combo.blockSignals(False)
+        self._zoom_pref = float(self.size_combo.currentData())
+        if self._zoom_pref <= 0:
+            self._fit = True
+            self._apply_fit()
+        else:
+            self._fit = False
+            self._scale = self._zoom_pref
+            self.view.resetTransform()
+            self.view.scale(self._scale, self._scale)
+        if save:
+            self.settings_changed.emit()
+
+    def _size_chosen(self, _i):
+        self._set_zoom_pref(float(self.size_combo.currentData()))
 
     def _explain_toggled(self, on):
         self.explain_mode = on
@@ -909,6 +1247,7 @@ class CpuArchitecturePanel(QWidget):
         if on:
             self._stop_anim()
             self._rec = None
+            self._mv = None
             self._pending_live = None
             self.text.clear()
         elif self._rec is None:
@@ -926,6 +1265,11 @@ class CpuArchitecturePanel(QWidget):
             return
         self._kit = kit
         self._redraw()
+
+    def set_memview(self, mv: MemView | None):
+        """Memory / stack snapshot read from the simulator. Ignored while Experiment 1 hides the answer: the cells
+        could hold A or a port value, so nothing from memory is stored, let alone drawn."""
+        self._mv = None if self._concealed else mv
 
     def show_live(self, state: CpuState, immediate: bool = False):
         """Current CPU state. While a program runs the calls are coalesced to ~10 per second."""
@@ -969,6 +1313,18 @@ class CpuArchitecturePanel(QWidget):
         self._render_text()
         self.tabs.setCurrentWidget(self.text)
         self._update_buttons()
+        self._reveal(rec)
+
+    def _reveal(self, rec: StepRecord):
+        """When the diagram is taller than the panel (it scrolls rather than shrinking the text), scroll so the
+        parts this step used - the Memory area and the stack pointer - are in view."""
+        rect = None
+        for nid, used in (("MEM", bool(rec.mem_accesses)), ("SP", rec.sp_change is not None)):
+            if used:
+                r = self.nodes[nid].sceneBoundingRect()
+                rect = r if rect is None else rect.united(r)
+        if rect is not None:
+            self.view.ensureVisible(rect, 12, 12)
 
     def reset(self):
         """Program reloaded / restarted: forget the last step."""
@@ -1096,7 +1452,7 @@ class CpuArchitecturePanel(QWidget):
                 continue
             use_post = rec is not None and sub_phase and nid in done_dst
             st = rec.post if use_post else shown
-            masked = self._concealed and nid == "A"
+            masked = self._concealed and nid in REG_ORDER  # A and B..L: a stale copy of the answer may sit in any
             is_changed = rec is not None and nid in changed and (not sub_phase or use_post)
             old = chg_regs.get(nid)
             if rec is not None and nid == "PC" and rec.pc_change:
@@ -1113,16 +1469,22 @@ class CpuArchitecturePanel(QWidget):
         fl_node.set_state(flags_vals=fst.flags if fst is not None else None,
                           flags_changed=frozenset(n for n, _, _ in rec.flag_changes) if rec is not None
                           and (not sub_phase or "FLAGS" in done_dst) else frozenset(),
-                          masked=False)
+                          masked=self._concealed)
         # pairs
         for pid, fr in self.frames.items():
             st = shown
             if sub_phase and rec is not None and (pid in done_dst or set(PAIRS[pid]) & done_dst):
                 st = rec.post
             fr.set_state(role=roles.get(pid, ""), changed=pid in changed and not sub_phase,
-                         value=st.pair(pid) if st is not None else None, masked=False, decimal=self.decimal)
+                         value=st.pair(pid) if st is not None else None, masked=self._concealed,
+                         decimal=self.decimal)
         # IR / interfaces / memory / ports -----------------------------
+        hide = self._concealed
+        mv = None if hide else self._mv
+        self.nodes["SP"].set_state(mv=mv, hide_contents=hide)
         self._update_blocks(rec, shown, sub_phase)
+        self.nodes["MEM"].set_state(mv=mv, hide_contents=hide,
+                                    uses=tuple(rec.mem_accesses) if rec is not None and not hide else ())
         self.caption.setText(("" if self._concealed else (cap if cap else "")))
         self.scene.update()
         sm = self.status
@@ -1136,35 +1498,34 @@ class CpuArchitecturePanel(QWidget):
             ir.set_state(extra=[rec.text, f"opcode {rec.raw[0]:02X}h, {rec.length} byte(s)", rec.family],
                          role=rec.role_map.get("IR", ""), tag=rec.tag_map.get("IR", ""))
         else:
-            ir.set_state(extra=["(no step captured)" if rec is None else rec.text, "", ""], role="", tag="")
+            ir.set_state(extra=["(no step captured)" if rec is None else
+                                ("(nothing executed)" if rec.kind == "none" else rec.text), "", ""], role="", tag="")
         mem_lines: list[str] = []
         io_lines: list[str] = []
         pin, pout = self.nodes["PORT_IN"], self.nodes["PORT_OUT"]
         sw_port, led_port = kit.switch_port, kit.led_port
         kit_in = kit.enabled
-        pin.set_state(title="Input port", extra=[f"port {sw_port:02X}H" + (" - kit switches" if kit_in else ""),
-                                                  f"switches {hexs(kit.switches, 8)}" if kit_in else "value from the I/O table",
+        pin.set_state(title="Input port", extra=[f"port {sw_port:02X}H" + (" (kit)" if kit_in else ""),
+                                                  f"switches {hexs(kit.switches, 8)}" if kit_in else "from I/O table",
                                                   bins(kit.switches, 8) + "b" if kit_in else ""], leds=None)
-        pout.set_state(title="Output port", extra=[f"port {led_port:02X}H" + (" - kit LEDs" if kit_in else ""),
+        pout.set_state(title="Output port", extra=[f"port {led_port:02X}H" + (" (kit)" if kit_in else ""),
                                                     "", ""], leds=None)
         if rec is not None and rec.kind == "instr":
             for ev in rec.port_events:
                 node = pin if ev.direction == "IN" else pout
                 inkit = kit.enabled and ev.port == (sw_port if ev.direction == "IN" else led_port)
                 node.set_state(title=("Input port" if ev.direction == "IN" else "Output port"),
-                               extra=[f"port {ev.port:02X}H" + (" - kit" if inkit else ""),
+                               extra=[f"port {ev.port:02X}H" + (" (kit)" if inkit else ""),
                                       f"{ev.direction} value {hexs(ev.value, 8)}", bins(ev.value, 8) + "b"])
-            for a in rec.mem_accesses[:3]:
-                mem_lines.append(f"{'read' if a.kind == 'R' else 'write'} {a.addr:04X}h = {a.value:02X}h"
-                                 + ("" if a.observed else " (expected)"))
         if kit.enabled and kit.leds_written:
             pout.set_state(leds=kit.leds)
-        self.nodes["MEM"].set_state(extra=mem_lines or ["no memory access in this step" if rec is not None and
-                                                         rec.kind == "instr" else "64K bytes, 0000h-FFFFh"],
-                                    role=(rec.role_map.get("MEM", "") if rec is not None else ""))
+        note = "64K bytes, 0000h-FFFFh"
+        if rec is not None:
+            note = {"instr": "no memory access in this step", "none": "nothing executed",
+                    "interrupt": "interrupt entry: see the stack"}.get(rec.kind, "many instructions ran: see recent use")
+        self.nodes["MEM"].set_state(mem_note=note, role=(rec.role_map.get("MEM", "") if rec is not None else ""))
         mif = rec.role_map.get("MEM", "") if rec is not None else ""
-        self.nodes["MEMIF"].set_state(extra=["address 16 bits, data 8 bits"] if mif else ["address 16 bits / data 8 bits"],
-                                      role="")
+        self.nodes["MEMIF"].set_state(extra=["address 16 bits / data 8 bits"], role="")
         ports_used = rec is not None and any(f.src.startswith("PORT") or f.dst.startswith("PORT") for f in rec.flows)
         self.nodes["IOIF"].set_state(extra=["port number 8 bits / data 8 bits"], role="both" if ports_used else "")
         rm = rec.role_map if rec is not None else {}
@@ -1246,13 +1607,33 @@ class CpuArchitecturePanel(QWidget):
     # ------------------------------------------------------------- zoom
     def zoom_by(self, factor: float):
         if factor == 0.0:
-            self._fit = True
-            self._apply_fit()
+            self._set_zoom_pref(0.0)
             return
         self._fit = False
         self._scale = max(0.3, min(3.0, self._scale * factor))
         self.view.resetTransform()
         self.view.scale(self._scale, self._scale)
+
+    def view_state(self) -> dict:
+        """The diagram's zoom and scroll position (kept across Enlarge / Restore)."""
+        return {"fit": self._fit, "pref": self._zoom_pref, "scale": self._scale,
+                "h": self.view.horizontalScrollBar().value(), "v": self.view.verticalScrollBar().value()}
+
+    def restore_view_state(self, st: dict):
+        """Put a ``view_state`` back. The scroll ranges only settle after the panel has been re-laid out, so it is
+        applied now and again once the event loop has run."""
+        def apply():
+            if not st["fit"]:
+                self._fit = False
+                self._scale = st["scale"]
+                self.view.resetTransform()
+                self.view.scale(self._scale, self._scale)
+                self.view.horizontalScrollBar().setValue(st["h"])
+                self.view.verticalScrollBar().setValue(st["v"])
+        apply()
+        if not st["fit"]:
+            QTimer.singleShot(0, apply)
+            QTimer.singleShot(80, apply)
 
     def _apply_fit(self):
         vw, vh = self.view.viewport().width(), self.view.viewport().height()
@@ -1263,9 +1644,67 @@ class CpuArchitecturePanel(QWidget):
         self._scale = s
         self.view.resetTransform()
         self.view.scale(s, s)
+        self.view.verticalScrollBar().setValue(0)  # a diagram taller than the panel starts at its top
+        self.view.horizontalScrollBar().setValue(0)
+
+    def pinned_height(self) -> int:
+        """Height the header (all its wrapped rows) needs, plus a strip of the diagram below it. A dock hosting this
+        panel must not be shorter, or the controls would be clipped or scrolled away (see DockScroll)."""
+        m = self.layout().contentsMargins() if self.layout() is not None else None
+        top = m.top() if m is not None else 0
+        return top + self.header.sizeHint().height() + self.header.spacing() + 40
+
+    def _reflow_header(self):
+        """Wrap the header controls to the panel width (greedy, in reading order). Same widgets, new rows."""
+        avail = max(120, self.width() - 12)
+        sp = 6
+        rows: list[tuple[list, list]] = []
+        for left, right in self._header_groups:
+            cur, w = [], 0
+            for it in left:
+                iw = it.sizeHint().width()
+                if cur and w + sp + iw > avail:
+                    rows.append((cur, []))
+                    cur, w = [], 0
+                cur.append(it)
+                w += iw + (sp if len(cur) > 1 else 0)
+            rw = sum(it.sizeHint().width() for it in right) + sp * (len(right) - 1)
+            if w + sp + rw <= avail:
+                rows.append((cur, right))
+            else:
+                rows.append((cur, []))
+                rows.append(([], right))
+        sig = tuple((tuple(id(x) for x in a), tuple(id(x) for x in b)) for a, b in rows)
+        if sig == self._header_sig:
+            return
+        self._header_sig = sig
+        while self.header.count():  # drop the old rows; the widgets stay children of the panel
+            item = self.header.takeAt(0)
+            lay = item.layout()
+            if lay is not None:
+                while lay.count():
+                    lay.takeAt(0)
+                lay.setParent(None)
+                lay.deleteLater()
+        for a, b in rows:
+            r = QHBoxLayout()
+            for it in a:
+                r.addWidget(it)
+            r.addStretch(1)
+            for it in b:
+                r.addWidget(it)
+            self.header.addLayout(r)
+        self.header.invalidate()
+        self.updateGeometry()
+        parent = self.parentWidget()
+        if parent is not None:  # the scroll area / dock that hosts us re-reads pinned_height()
+            parent.updateGeometry()
+            if parent.parentWidget() is not None:
+                parent.parentWidget().updateGeometry()
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
+        self._reflow_header()
         if self._fit:
             self._apply_fit()
 
@@ -1284,6 +1723,38 @@ class CpuArchitecturePanel(QWidget):
     def scale_factor(self) -> float:
         return self._scale
 
+    # --------------------------------------------------------- enlarge
+    def set_zoom_keys(self, on: bool):
+        """Ctrl+= / Ctrl++ / Ctrl+- inside the panel. A host that already owns those keys (the main window, which
+        dispatches them by focus) switches them off so the key is not ambiguous; the enlarged window switches them on."""
+        for sc in self._zoom_shortcuts:
+            sc.setEnabled(bool(on))
+
+    def toggle_enlarged(self):
+        self.set_enlarged(not self.enlarged)
+
+    def set_enlarged(self, on: bool):
+        """Ask the main window to show this panel (diagram + labs) in a maximized window, or to put it back.
+        The window owner calls ``mark_enlarged`` once it has done so; the panel itself never moves."""
+        if bool(on) != self.enlarged:
+            self.enlarge_requested.emit(bool(on))
+
+    def mark_enlarged(self, on: bool):
+        self.enlarged = bool(on)
+        self._esc_shortcut.setEnabled(self.enlarged)
+        self.max_btn.setToolTip(("Back to the normal layout (Esc or Ctrl+Shift+F)" if on else
+                                 "Enlarge the CPU Architecture view and the labs to a full window (Ctrl+Shift+F). "
+                                 "Press Esc or the same button to go back."))
+        self.max_btn.setAccessibleName("Restore the normal layout" if on else
+                                       "Enlarge the CPU Architecture view and labs")
+        self._icons()
+        if self._fit:
+            QTimer.singleShot(0, self._apply_fit)
+
+    def _escape(self):
+        if self.enlarged:
+            self.set_enlarged(False)
+
     # ------------------------------------------------------- keyboard
     def focus_step(self, node: NodeItem, delta: int):
         items = list(self.nodes.values())
@@ -1297,6 +1768,20 @@ class CpuArchitecturePanel(QWidget):
         self.view.setAccessibleDescription(text)
 
     # ------------------------------------------------------ for tests
+    def audit_paint(self) -> list:
+        """Render the whole scene once and return every text drawn inside a box (``TextRec``)."""
+        from PySide6.QtGui import QImage
+        self.audit = []
+        try:
+            img = QImage(int(SCENE_W), int(SCENE_H), QImage.Format.Format_ARGB32)
+            img.fill(0)
+            p = QPainter(img)
+            self.scene.render(p)
+            p.end()
+            return list(self.audit)
+        finally:
+            self.audit = None
+
     def node_texts(self) -> list[str]:
         out = [n.describe() + " " + n.toolTip() for n in self.nodes.values()]
         out += [f.toolTip() for f in self.flow_items]

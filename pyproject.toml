@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "studio8085"
-version = "1.1.0"
+version = "1.2.0"
 description = "Assembler, simulator and debugger for the Intel 8085 microprocessor, with a modern Qt interface"
 readme = "README.md"
 license = { text = "MIT" }
@@ -25,7 +25,7 @@ classifiers = [
 dependencies = ["PySide6-Essentials>=6.5"]
 
 [project.optional-dependencies]
-dev = ["pytest>=7", "pyinstaller>=6"]
+dev = ["pytest>=7", "pytest-timeout>=2.3", "pyinstaller>=6"]
 
 [project.gui-scripts]
 studio8085 = "studio8085.app:main"
@@ -40,3 +40,9 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = ["ignore:.*propagateSizeHints.*"]
+# Slowest tests are listed on every run. A test that stalls (an event loop that never settles) is stopped after
+# `timeout` seconds and its stack is dumped (faulthandler); the longest healthy test takes a few seconds.
+addopts = "--durations=25"
+timeout = 180
+faulthandler_timeout = 120
+markers = ["gui: needs Qt (PySide6); selected with -m gui, the rest with -m 'not gui'"]

@@ -95,11 +95,12 @@ for theme in ("Dark", "Light", "High Contrast"):
 
 # ---- generic instruction (no detailed visual) and a stack instruction
 w._apply_theme("Dark")
-w.editor.setPlainText("START: LXI H,1234H\n       DAD H\n       PUSH H\n       HLT\n")
+w.editor.setPlainText("START: LXI SP,2100H\n       LXI H,1234H\n       DAD H\n       PUSH H\n       PUSH PSW\n"
+                      "       POP D\n       CALL SUBR\n       HLT\nSUBR:  RET\n")
 w._live_check()
 w._assemble_and_load()
-w.cmd_step("into")
-w.cmd_step("into")
+for _ in range(3):
+    w.cmd_step("into")
 settle(3)
 panel_shot("generic_DAD")
 w.cmd_step("into")
@@ -111,6 +112,72 @@ for theme in ("Light", "High Contrast"):
     panel_shot("stack_PUSH_" + theme.lower().replace(" ", "_"))
 w._apply_theme("Dark")
 settle(5)
+for name in ("PSW", "POP", "CALL", "RET"):  # the stack pointer's contents follow every stack instruction
+    w.cmd_step("into")
+    settle(3)
+    panel_shot("stack_" + name)
+
+# ---- memory cells used by a step: the diagram's Memory area and the Memory dock
+md = w.docks["memory"]
+md.show()
+md.setFloating(True)  # a taller window, so the hex table with the marked cells is in the picture
+md.resize(640, 640)
+settle(10)
+w.editor.setPlainText("START: LXI SP,2100H\n       LXI H,3000H\n       MVI A,3FH\n       STA 2000H\n       LDA 2000H\n"
+                      "       MOV M,A\n       INR M\n       HLT\n")
+w._live_check()
+w._assemble_and_load()
+for _ in range(4):
+    w.cmd_step("into")
+settle(5)
+panel_shot("memory_access_STA")
+shot(w.docks["memory"], "memory_dock_marks_STA")
+w.cmd_step("into")
+settle(5)
+panel_shot("memory_access_LDA")
+w.cmd_step("into")
+w.cmd_step("into")
+settle(5)
+panel_shot("memory_access_INR_M")
+shot(w.docks["memory"], "memory_dock_marks_INR_M")
+md.setFloating(False)
+settle(10)
+
+# ---- the enlarge (full window) button
+w.cpu_dock.setFloating(True)
+w.show_cpu_view()
+settle(5)
+p.max_btn.click()
+settle(25)
+shot(w.cpu_big, "enlarged_view")
+p.tabs.setCurrentWidget(p.labs)
+shot(w.cpu_big, "enlarged_view_labs")
+p.tabs.setCurrentWidget(p.text)
+p.max_btn.click()
+settle(10)
+
+# ---- a stepped (not masked) state in every theme and at the two extreme window sizes
+for theme in ("Dark", "Light", "High Contrast"):
+    w._apply_theme(theme)
+    settle(5)
+    p.zoom_by(0.0)
+    panel_shot("stepped_panel_" + theme.lower().replace(" ", "_"))
+w._apply_theme("Dark")
+for (sw, sh) in ((800, 600), (1366, 768)):
+    w.showNormal()
+    w.resize(sw, sh)
+    settle(15)
+    w.cpu_dock.setFloating(False)
+    w.cpu_dock.show()
+    w.cpu_dock.raise_()
+    settle(15)
+    shot(w, f"stepped_docked_{sw}x{sh}")
+    w.cpu_dock.setFloating(True)
+    w.show_cpu_view()
+    settle(10)
+w.showNormal()
+w.resize(1366, 768)
+settle(10)
 
 # ---- mid-animation frame
 p.apply_settings(explain=True, animate=True, reduce_motion=False, speed=0.5)
@@ -159,6 +226,16 @@ for theme in ("Dark", "Light", "High Contrast"):
         panel_shot(f"size_{sw}x{sh}_panel_{tag}")
 w._apply_theme("Dark")
 settle(5)
+
+# ---- enlarged at 800x600
+w.showNormal()
+w.resize(800, 600)
+settle(15)
+p.max_btn.click()
+settle(25)
+shot(w.cpu_big, "enlarged_view_from_800x600")
+p.max_btn.click()
+settle(10)
 
 # ---- the smallest the panel can get: it scrolls instead of squeezing the labels
 w.cpu_dock.setFloating(True)

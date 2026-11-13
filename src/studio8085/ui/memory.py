@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from PySide6.QtCore import (QAbstractTableModel, QModelIndex, QPointF, QRectF, QSize, Qt, Signal)
-from PySide6.QtGui import QBrush, QColor, QFont, QFontMetrics, QImage, QPainter, QPen
-from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QHBoxLayout, QHeaderView, QLabel,
-                               QLineEdit, QPushButton, QSplitter, QTableView, QVBoxLayout, QWidget)
+from PySide6.QtGui import QBrush, QColor, QFont, QFontMetrics, QImage, QPainter, QPalette, QPen
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QHBoxLayout, QHeaderView, QLabel,
+                               QLineEdit, QPushButton, QSplitter, QStyle, QStyledItemDelegate, QStyleOptionViewItem,
+                               QTableView, QVBoxLayout, QWidget)
 
 from .editor import monospace_font
 from .themes import Theme
@@ -266,6 +267,37 @@ class HeatmapWidget(QWidget):
         return head + (f"  ({sym})" if sym else "") + f"\n{body}\nreads {rd}, writes {wr}" + tail
 
 
+MARK_ROLE = Qt.ItemDataRole.UserRole + 5
+
+
+class MarkDelegate(QStyledItemDelegate):
+    """Draws the normal cell, then a small R / W letter in the corner of the cells the last step used, so the
+    read / write distinction never depends on colour."""
+
+    def paint(self, painter, option, index):
+        mk = index.data(MARK_ROLE)
+        if not mk:
+            super().paint(painter, option, index)
+            return
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        value, opt.text = opt.text, ""
+        style = opt.widget.style() if opt.widget else QApplication.style()
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, painter, opt.widget)
+        painter.save()
+        fg = index.data(Qt.ItemDataRole.ForegroundRole)
+        painter.setPen(fg.color() if isinstance(fg, QBrush) else option.palette.color(QPalette.ColorRole.Text))
+        f = QFont(option.font)
+        f.setBold(True)
+        painter.setFont(f)
+        r = option.rect.adjusted(2, 0, -2, 0)
+        painter.drawText(r, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, value)
+        f.setPointSizeF(max(6.5, f.pointSizeF() * 0.65))
+        painter.setFont(f)
+        painter.drawText(r, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, mk)  # R / W: not colour only
+        painter.restore()
+
+
 class HexModel(QAbstractTableModel):
     edited = Signal()
 
@@ -276,6 +308,7 @@ class HexModel(QAbstractTableModel):
         self.window = 400
         self.font = monospace_font(size=10)
         self.edit_hook = None
+        self.marks: dict[int, str] = {}  # cells used by the last step: "R", "W" or "RW" (read from the recorder)
 
     def set_theme(self, theme):
         self.theme = theme
@@ -329,8 +362,13 @@ class HexModel(QAbstractTableModel):
             return int(Qt.AlignmentFlag.AlignCenter)
         if role == Qt.ItemDataRole.ForegroundRole:
             return QBrush(t.c("text") if v else t.c("text_dim"))
+        if role == MARK_ROLE:
+            return self.marks.get(addr, "")
         if role == Qt.ItemDataRole.BackgroundRole:
             cpu = self.machine.cpu
+            mk = self.marks.get(addr)
+            if mk:
+                return QBrush(mix(t.c("base"), t.c("heat_write" if "W" in mk else "heat_read"), 0.8))
             if addr == cpu.pc:
                 return QBrush(mix(t.c("base"), t.c("ok"), 0.55))
             if addr == cpu.sp:
@@ -343,7 +381,10 @@ class HexModel(QAbstractTableModel):
             return None
         if role == Qt.ItemDataRole.ToolTipRole:
             sym = self.machine.symbol_for(addr)
-            return (f"{addr:04X}h" + (f"  ({sym})" if sym else "") + f"\n{v:02X}h = {v} = {v:08b}b\n"
+            mk = self.marks.get(addr)
+            used = {"R": "READ by the last step\n", "W": "WRITTEN by the last step\n",
+                    "RW": "READ and WRITTEN by the last step\n"}.get(mk or "", "")
+            return (used + f"{addr:04X}h" + (f"  ({sym})" if sym else "") + f"\n{v:02X}h = {v} = {v:08b}b\n"
                     f"reads {mem.rd[addr]}, writes {mem.wr[addr]}")
         return None
 
@@ -400,6 +441,7 @@ class MemoryPanel(QWidget):
             self.table.setColumnWidth(c, 29)
         self.table.setColumnWidth(16, 136)
         self.table.setStyleSheet("QTableView::item { padding: 0px; }")
+        self.table.setItemDelegate(MarkDelegate(self.table))
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked
                                    | QAbstractItemView.EditTrigger.EditKeyPressed
                                    | QAbstractItemView.EditTrigger.AnyKeyPressed)
@@ -421,6 +463,11 @@ class MemoryPanel(QWidget):
         self.legend.setObjectName("Dim")
         self.legend.setWordWrap(True)
         self.legend.setTextFormat(Qt.TextFormat.RichText)
+        self.step_label = QLabel()
+        self.step_label.setObjectName("Dim")
+        self.step_label.setWordWrap(True)
+        self.step_label.setVisible(False)
+        self.step_label.setAccessibleName("Memory cells used by the last step")
         self.detail = QLabel("Click a square or a byte to see what it is.")
         self.detail.setObjectName("Card")
         self.detail.setWordWrap(True)
@@ -453,6 +500,7 @@ class MemoryPanel(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
         lay.addLayout(top)
+        lay.addWidget(self.step_label)
         lay.addWidget(split, 1)
         lay.addWidget(self.detail)
         self.table.selectionModel().currentChanged.connect(self._on_current)
@@ -579,6 +627,32 @@ class MemoryPanel(QWidget):
             return
         self.goto.setStyleSheet("")
         self.scroll_to(a & 0xFFFF)
+
+    def set_step_accesses(self, accesses):
+        """Mark the cells the last step read or wrote (from the step recorder): a coloured cell with an R / W
+        letter, a one-line summary above the table, and the first cell scrolled into view. ``()`` clears."""
+        marks: dict[int, str] = {}
+        for a in accesses:
+            marks[a.addr] = "RW" if marks.get(a.addr, a.kind) != a.kind else a.kind
+        changed = marks != self.model.marks
+        self.model.marks = marks
+        if not marks:
+            self.step_label.setVisible(False)
+            self.step_label.setText("")
+        else:
+            parts = []
+            for a in accesses[:6]:
+                parts.append(f"WRITE {a.addr:04X}h {a.old:02X}h -> {a.value:02X}h" if a.kind == "W" and a.old is not None
+                             else f"{'WRITE' if a.kind == 'W' else 'READ'} {a.addr:04X}h = {a.value:02X}h")
+            self.step_label.setText("Last step used: " + "; ".join(parts))
+            self.step_label.setVisible(True)
+            first = accesses[0].addr
+            idx = self.model.index(first // 16, first % 16)
+            if not self.table.viewport().rect().contains(self.table.visualRect(idx)):
+                self.table.scrollTo(idx, QAbstractItemView.ScrollHint.PositionAtCenter)
+        if changed:
+            self.table.viewport().update()
+            self.heat.update()
 
     def _edited(self):
         self.heat.rebuild()

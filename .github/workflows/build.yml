@@ -89,7 +89,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        # The Linux bundle carries libraries from the build machine, so it only runs on systems with at least the build
+        # machine's glibc. ubuntu-latest (26.04, glibc 2.43) produced a bundle that failed on Ubuntu 24.04 LTS; build on
+        # the oldest supported runner instead (22.04, glibc 2.35).
+        os: [ubuntu-22.04, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
@@ -124,6 +127,13 @@ jobs:
       - name: Self-test the packaged app (Linux)
         if: runner.os == 'Linux'
         run: ./dist/8085Studio/8085Studio --selftest
+      - name: Check the Linux bundle's glibc requirement (must run on Ubuntu 22.04 / glibc 2.35)
+        if: runner.os == 'Linux'
+        run: |
+          need=$(find dist/8085Studio -type f \( -name '*.so*' -o -name 8085Studio \) -exec objdump -T {} + 2>/dev/null \
+                 | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -uV | tail -1)
+          echo "highest glibc symbol version required: $need"
+          test -n "$need" && test "$(printf '%s\n' "$need" 2.35 | sort -V | tail -1)" = "2.35"
       - name: Self-test the packaged app (Windows)
         if: runner.os == 'Windows'
         run: .\dist\8085Studio\8085Studio.exe --selftest
